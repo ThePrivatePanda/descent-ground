@@ -2,20 +2,29 @@
 
 Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-Beam LoRa receivers over USB.
 
-**Open it:** https://ground.privatepanda.co (the old link privatepanda.co/descent-ground/ redirects)
+## Run it
 
-- Chrome or Edge (desktop): Windows, macOS, Linux, ChromeOS.
+1. Download this repo (green **Code** button → **Download ZIP**) and unzip it. No install, no internet needed.
+2. Double-click **`Open DeSCENT Ground.html`** in Chrome or Edge (Windows, macOS, Linux, ChromeOS).
+3. Plug in a T-Beam, click **Connect receiver**, pick its port. Repeat for each extra T-Beam.
+
 - Firefox and Safari can open saved logs but cannot connect to a receiver (no Web Serial).
-- No internet at the site: download this repo and double-click `web/index.html`. The hosted page also keeps an offline copy after the first visit.
+- A hosted copy is at https://ground.privatepanda.co.
 
-## Use
+## Recording
 
-1. Plug in a T-Beam. Click **Connect receiver** and pick its port. Repeat for more receivers.
-2. **Record to file** streams every received line to a file (saved to disk every 5 s).
-3. **Save session** downloads everything received since the page opened.
-4. **Open log** replays a saved file, or an old lab log from the CSV receiver.
-5. **Autosave:** everything received is also kept in the browser every 5 s. After a crash, the next visit offers to open, download or discard it.
-6. **Settings:** graph time span, when old graph data is dropped, status thresholds, saving. Remembered per browser.
+| Control | Does |
+|---|---|
+| **Start** | Asks where to save, then writes every line from **every connected receiver** to that file, whichever unit is on screen. Saved to disk every 5 s. |
+| **Pause / Resume** | Stops / restarts writing. The file marks where it paused. |
+| **Stop** | Finishes the file. |
+| **Save session** | Downloads everything from all receivers since the page opened, recorded or not. |
+| Autosave | Everything is also kept in the browser every 5 s. After a crash, the next visit offers to open, download or discard it. |
+| **Open log** | Replays a saved file, or an old lab log from the CSV receiver. |
+
+In browsers without the save-file picker, the recording is kept in memory and downloaded on **Stop**.
+
+**Settings** (graph time span, when old graph data is dropped, status thresholds, saving) are remembered per browser.
 
 ## Screen
 
@@ -49,6 +58,7 @@ Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-B
 
 | Path | What it does |
 |---|---|
+| `Open DeSCENT Ground.html` | Double-click launcher; opens `web/index.html`. |
 | `web/index.html` | The page. |
 | `web/js/packet.js` | Packet layout, CRC, decode. Mirrors `Telemetry.h` in the flight code. |
 | `web/js/lines.js` | Turns one serial line (raw, CSV, hex dump) into an event. |

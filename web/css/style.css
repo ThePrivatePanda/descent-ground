@@ -84,8 +84,6 @@ button.primary:hover { filter: brightness(1.08); }
 button.quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
 button.quiet:hover { background: var(--sunk); color: var(--ink); }
 button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-button.rec { border-color: var(--critical); color: var(--critical); }
-button.rec::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--critical); }
 button:disabled { opacity: .45; cursor: default; }
 
 /* ---------- top bar ---------- */
@@ -115,6 +113,16 @@ button:disabled { opacity: .45; cursor: default; }
 }
 .replaybar input[type=range] { flex: 1; accent-color: var(--accent); }
 .banner { background: var(--warning-soft); }
+
+/* ---------- recording panel ---------- */
+.recpanel { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 4px 0 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sunk); }
+.rec-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; font-size: 12.5px; color: var(--ink-2); margin-right: 2px; }
+.rec-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+.rec-state.recording { color: var(--critical); } .rec-state.recording::before { background: var(--critical); }
+.rec-state.paused { color: var(--warning); } .rec-state.paused::before { background: var(--warning); }
+.recpanel button { height: 26px; }
+.rec-info { font-size: 12px; color: var(--ink-2); margin: 0 6px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-info b { color: var(--ink); font-weight: 600; }
 
 /* ---------- layout ---------- */
 .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(340px, 32%) 1fr; gap: 10px; padding: 10px; }

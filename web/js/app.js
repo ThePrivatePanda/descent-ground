@@ -52,14 +52,15 @@
     return target.ingest(ev, t, rx);
   }
 
+  // Every line from every connected receiver is recorded, whichever unit is on screen.
   const hub = new DG.SerialHub((rx, text) => {
     const t = Date.now();
-    recorder.add(t, rx, text);
+    const result = ingestLine(live, rx, text, t);
+    recorder.add(t, rx, text, result === 'new' || result === 'duplicate' || result === 'badcrc');
     if (settings.autosave) autosave.add(R.formatLine(t, rx, text));
-    ingestLine(live, rx, text, t);
   }, () => renderReceivers());
 
-  if (!hub.supported) { $('unsupported').hidden = false; $('btn-connect').disabled = true; $('btn-record').disabled = true; }
+  if (!hub.supported) { $('unsupported').hidden = false; $('btn-connect').disabled = true; }
 
   $('btn-connect').addEventListener('click', async () => {
     try {
@@ -72,22 +73,49 @@
   });
 
   // ---------- recording ----------
-  $('btn-record').addEventListener('click', async () => {
-    const b = $('btn-record');
-    if (recorder.writable) {
-      await recorder.stop();
-      b.textContent = 'Record to file'; b.classList.remove('rec');
-      toast('Recording saved to ' + recorder.fileName);
-      return;
-    }
-    if (!recorder.canStream()) { toast('This browser cannot stream to a file; use Save session instead'); return; }
+  $('rec-start').addEventListener('click', async () => {
     try {
       await recorder.start(settings.fileTag);
-      b.textContent = 'Recording ' + recorder.fileName; b.classList.add('rec');
+      toast(recorder.toFile ? 'Recording to ' + recorder.fileName : 'Recording. This browser saves the file when you press Stop.');
     } catch (e) {
       if (e && e.name !== 'AbortError') toast('Could not start recording: ' + (e.message || e));
     }
+    renderRecorder();
   });
+  $('rec-pause').addEventListener('click', () => {
+    if (recorder.state === 'recording') recorder.pause(); else recorder.resume();
+    renderRecorder();
+  });
+  $('rec-stop').addEventListener('click', async () => {
+    const lines = recorder.rec.lines;
+    const blob = await recorder.stop();
+    if (blob) download(blob, recorder.fileName);
+    toast('Saved ' + lines + ' lines to ' + recorder.fileName);
+    renderRecorder();
+  });
+
+  function renderRecorder() {
+    const st = recorder.state;
+    const label = { idle: 'Not recording', recording: 'Recording', paused: 'Paused' }[st];
+    $('rec-state').textContent = label;
+    $('rec-state').className = 'rec-state ' + st;
+    $('rec-start').disabled = st !== 'idle';
+    $('rec-pause').disabled = st === 'idle';
+    $('rec-pause').textContent = st === 'paused' ? 'Resume' : 'Pause';
+    $('rec-stop').disabled = st === 'idle';
+    const r = recorder.rec;
+    const rxs = Object.keys(r.perRx);
+    if (st === 'idle') {
+      $('rec-info').innerHTML = recorder.fileName ? 'Last: ' + esc(recorder.fileName) : '';
+      $('rec-info').title = '';
+      return;
+    }
+    const secs = Math.floor(recorder.elapsedMs(Date.now()) / 1000);
+    const hms = [Math.floor(secs / 3600), Math.floor(secs / 60) % 60, secs % 60].map((n) => String(n).padStart(2, '0')).join(':');
+    $('rec-info').innerHTML = '<b>' + hms + '</b>  ' + r.packets + ' packets from ' + rxs.length + (rxs.length === 1 ? ' receiver' : ' receivers');
+    $('rec-info').title = 'File: ' + recorder.fileName + '\n' + rxs.map((k) => rxName(k) + ': ' + r.perRx[k].packets + ' packets, ' + r.perRx[k].lines + ' lines').join('\n') +
+      (recorder.error ? '\nWrite error: ' + recorder.error : '');
+  }
 
   $('btn-save').addEventListener('click', () => {
     download(recorder.sessionBlob(), settings.fileTag + '-session-' + stamp() + '.log');
@@ -95,7 +123,7 @@
   });
 
   window.addEventListener('beforeunload', (e) => {
-    if (recorder.writable || live.total > 0) { e.preventDefault(); e.returnValue = ''; }
+    if (recorder.state !== 'idle' || live.total > 0) { e.preventDefault(); e.returnValue = ''; }
   });
 
   // ---------- crash autosave ----------
@@ -202,11 +230,6 @@
   $('btn-hide').addEventListener('click', () => {
     if (view.sel === null) return;
     fleet().hidden.add(view.sel); toast('Hid CSID ' + view.sel); view.sel = null; render(true);
-  });
-  $('btn-only').addEventListener('click', () => {
-    if (view.sel === null) return;
-    for (const c of fleet().units.keys()) if (c !== view.sel) fleet().hidden.add(c);
-    toast('Showing only CSID ' + view.sel); render(true);
   });
   $('btn-restore').addEventListener('click', () => { fleet().hidden.clear(); render(true); });
   $('btn-reset').addEventListener('click', () => {
@@ -495,6 +518,7 @@
     renderFleet(f, t);
     renderLatest(f, t);
     renderReceivers();
+    renderRecorder();
     if (force || Date.now() - lastChart > 500) {
       lastChart = Date.now();
       const u = view.sel === null ? null : f.units.get(view.sel);

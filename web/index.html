@@ -16,8 +16,14 @@
   <div id="receivers" class="receivers"></div>
   <span class="spacer"></span>
   <span id="mode" class="mode"></span>
-  <button id="btn-record" class="quiet" title="Stream every received line to a file on this computer">Record to file</button>
-  <button id="btn-save" class="quiet" title="Download everything received this session">Save session</button>
+  <div class="recpanel" id="recpanel" role="group" aria-label="Recording">
+    <span id="rec-state" class="rec-state">Not recording</span>
+    <button id="rec-start" title="Record every line from every connected receiver to a file">Start</button>
+    <button id="rec-pause" disabled>Pause</button>
+    <button id="rec-stop" disabled>Stop</button>
+    <span id="rec-info" class="rec-info"></span>
+  </div>
+  <button id="btn-save" class="quiet" title="Download everything received from all receivers since this page opened">Save session</button>
   <label class="button quiet" title="Open saved logs, including old lab CSV logs">Open log<input id="file-open" type="file" multiple accept=".txt,.log,.csv,.tsv" hidden></label>
   <button id="btn-settings" class="quiet" title="Graph, status and saving settings">Settings</button>
   <button id="btn-theme" class="quiet" title="Switch light / dark" aria-label="Switch light or dark theme">◑</button>
@@ -65,7 +71,6 @@
           <option value="attention">Sort: attention</option>
           <option value="csid">Sort: CSID</option>
         </select>
-        <button id="btn-only" class="quiet" title="Show only the selected unit">Only this</button>
         <button id="btn-hide" class="quiet" title="Hide the selected unit">Hide</button>
         <button id="btn-restore" class="quiet" title="Show hidden units">Restore</button>
         <button id="btn-reset" class="quiet" title="Forget all units and counts">Reset fleet</button>

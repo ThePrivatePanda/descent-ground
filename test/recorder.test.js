@@ -30,3 +30,23 @@ test('lab log with serial-monitor times, and one without any times', () => {
   const bare = R.parseLogFile('Latitude_deg,x\n1,2\n3,4\n', 'bare.txt', 0);
   assert.deepStrictEqual(bare.map((e) => e.t), [0, 1000, 2000]);
 });
+
+test('recording: all receivers, nothing while paused, readable on replay', async () => {
+  const rec = new R.Recorder();
+  rec.add(1, 'rx1', 'before start', false);          // session only
+  await rec.start('t');
+  assert.strictEqual(rec.state, 'recording');
+  rec.add(10, 'rx1', 'PKT,a', true);
+  rec.add(11, 'rx2', 'PKT,b', true);
+  rec.add(12, 'rx2', 'HB,1,1,0', false);
+  rec.pause();
+  rec.add(20, 'rx1', 'while paused', true);
+  rec.resume();
+  rec.add(30, 'rx3', 'PKT,c', true);
+  const blob = await rec.stop();
+  const events = R.parseLogFile(await blob.text(), 'x', 0);
+  assert.deepStrictEqual(events.map((e) => e.rx + ' ' + e.text), ['rx1 PKT,a', 'rx2 PKT,b', 'rx2 HB,1,1,0', 'rx3 PKT,c']);
+  assert.deepStrictEqual(rec.rec.perRx, { rx1: { lines: 1, packets: 1 }, rx2: { lines: 2, packets: 1 }, rx3: { lines: 1, packets: 1 } });
+  assert.strictEqual(rec.lines, 6, 'the session keeps every line, paused or not');
+  assert.strictEqual(rec.state, 'idle');
+});

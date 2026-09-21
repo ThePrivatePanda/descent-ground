@@ -52,39 +52,80 @@
     return [].concat(...parsed).sort((a, b) => a.t - b.t);
   }
 
-  // Live capture: everything is kept in memory for "Save session"; while
-  // recording, lines are also streamed to a file the user picked.
+  // Live capture. Every line from every receiver goes to the in-memory
+  // session ("Save session"). A recording additionally writes those lines to
+  // a file while it is running (not while paused).
+  //   state: 'idle' | 'recording' | 'paused'
+  //   toFile: true = streamed to a file picked at start (Chrome, Edge);
+  //           false = kept in memory and downloaded on stop (other browsers).
   class Recorder {
     constructor() {
       this.session = [HEADER + ' started ' + new Date().toISOString() + '\n'];
-      this.writable = null;
-      this.pending = '';
-      this.fileName = null;
       this.lines = 0;
+      this.state = 'idle';
+      this.reset();
     }
-    add(t, rx, text) {
+    reset() {
+      this.pending = '';
+      this.memory = [];
+      this.fileName = null;
+      this.rec = { lines: 0, packets: 0, perRx: {}, startedAt: 0, pausedAt: 0, pausedMs: 0 };
+      this.error = null;
+    }
+    add(t, rx, text, isPacket) {
       const s = formatLine(t, rx, text);
       this.session.push(s);
       this.lines++;
-      if (this.writable) this.pending += s;
+      if (this.state !== 'recording') return;
+      const r = this.rec.perRx[rx] || (this.rec.perRx[rx] = { lines: 0, packets: 0 });
+      r.lines++; this.rec.lines++;
+      if (isPacket) { r.packets++; this.rec.packets++; }
+      if (this.toFile) this.pending += s; else this.memory.push(s);
     }
     canStream() { return typeof showSaveFilePicker === 'function'; }
+    note(text) {
+      const s = '# ' + text + ' ' + new Date().toISOString() + '\n';
+      if (this.toFile) this.pending += s; else this.memory.push(s);
+    }
+    elapsedMs(now) {
+      if (this.state === 'idle') return 0;
+      return (this.state === 'paused' ? this.rec.pausedAt : now) - this.rec.startedAt - this.rec.pausedMs;
+    }
     async start(tag) {
-      this.handle = await showSaveFilePicker({
-        suggestedName: (tag || 'descent') + '-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.log',
-        types: [{ description: 'DeSCENT log', accept: { 'text/plain': ['.log'] } }],
-      });
-      this.fileName = this.handle.name;
-      this.size = 0;
-      this.writable = true;
-      this.pending = HEADER + ' started ' + new Date().toISOString() + '\n';
-      await this.flush();
-      this.timer = setInterval(() => this.flush().catch((e) => { this.error = String(e); }), 5000);
+      this.reset();
+      const name = (tag || 'descent') + '-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.log';
+      this.toFile = this.canStream();
+      if (this.toFile) {
+        this.handle = await showSaveFilePicker({ suggestedName: name, types: [{ description: 'DeSCENT log', accept: { 'text/plain': ['.log'] } }] });
+        this.fileName = this.handle.name;
+        this.size = 0;
+      } else {
+        this.fileName = name;
+      }
+      this.state = 'recording';
+      this.rec.startedAt = Date.now();
+      this.pending = '';
+      this.memory = [];
+      const head = HEADER + ' started ' + new Date().toISOString() + '\n';
+      if (this.toFile) { this.pending = head; await this.flush(); this.timer = setInterval(() => this.flush().catch((e) => { this.error = String(e); }), 5000); }
+      else this.memory.push(head);
+    }
+    pause() {
+      if (this.state !== 'recording') return;
+      this.note('paused');
+      this.state = 'paused';
+      this.rec.pausedAt = Date.now();
+    }
+    resume() {
+      if (this.state !== 'paused') return;
+      this.rec.pausedMs += Date.now() - this.rec.pausedAt;
+      this.state = 'recording';
+      this.note('resumed');
     }
     // A file writer only reaches the real file on close(), so every flush
     // opens, appends and closes. A crash loses at most one interval.
     async flush() {
-      if (!this.writable || !this.pending || this.flushing) return;
+      if (!this.toFile || !this.handle || !this.pending || this.flushing) return;
       this.flushing = true;
       const chunk = new TextEncoder().encode(this.pending); this.pending = '';
       try {
@@ -95,10 +136,15 @@
         this.size += chunk.length;
       } finally { this.flushing = false; }
     }
+    // Returns a Blob to download when the recording was kept in memory.
     async stop() {
+      if (this.state === 'idle') return null;
+      if (this.state === 'paused') this.rec.pausedMs += Date.now() - this.rec.pausedAt;
+      this.note('stopped');
+      this.state = 'idle';
       clearInterval(this.timer);
-      await this.flush();
-      this.writable = null;
+      if (this.toFile) { await this.flush(); this.handle = null; return null; }
+      return new Blob(this.memory, { type: 'text/plain' });
     }
     sessionBlob() { return new Blob(this.session, { type: 'text/plain' }); }
   }
