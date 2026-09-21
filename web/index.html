@@ -11,16 +11,16 @@
 </head>
 <body>
 <header class="bar">
-  <span class="brand">DeSCENT Ground</span>
+  <span class="brand">DeSCENT <span>Ground</span></span>
   <button id="btn-connect" class="primary" title="Pick a T-Beam serial port">Connect receiver</button>
   <div id="receivers" class="receivers"></div>
   <span class="spacer"></span>
   <span id="mode" class="mode"></span>
-  <button id="btn-record" title="Stream every received line to a file on this computer">Record to file</button>
-  <button id="btn-save" title="Download everything received this session">Save session</button>
-  <label class="button" title="Open saved logs, including old lab CSV logs">Open log<input id="file-open" type="file" multiple accept=".txt,.log,.csv,.tsv" hidden></label>
-  <button id="btn-settings" title="Graph, status and saving settings">Settings</button>
-  <button id="btn-theme" title="Switch light / dark">◑</button>
+  <button id="btn-record" class="quiet" title="Stream every received line to a file on this computer">Record to file</button>
+  <button id="btn-save" class="quiet" title="Download everything received this session">Save session</button>
+  <label class="button quiet" title="Open saved logs, including old lab CSV logs">Open log<input id="file-open" type="file" multiple accept=".txt,.log,.csv,.tsv" hidden></label>
+  <button id="btn-settings" class="quiet" title="Graph, status and saving settings">Settings</button>
+  <button id="btn-theme" class="quiet" title="Switch light / dark" aria-label="Switch light or dark theme">◑</button>
 </header>
 
 <div id="recover" class="banner" hidden>
@@ -47,12 +47,12 @@
 <main class="layout">
   <section class="pane left">
     <div class="pane-head">
-      <h2>Latest packet</h2>
+      <h2>Unit</h2>
       <select id="sel-unit" title="Unit shown"></select>
       <span class="spacer"></span>
-      <button id="btn-pause" title="Freeze this panel">Pause</button>
+      <button id="btn-pause" class="quiet" title="Freeze this panel">Pause</button>
     </div>
-    <div id="latest" class="latest"></div>
+    <div id="latest" class="detail"></div>
   </section>
 
   <section class="right">
@@ -65,21 +65,21 @@
           <option value="attention">Sort: attention</option>
           <option value="csid">Sort: CSID</option>
         </select>
-        <button id="btn-only" title="Show only the selected unit">Only this</button>
-        <button id="btn-hide" title="Hide the selected unit">Hide</button>
-        <button id="btn-restore" title="Show hidden units">Restore</button>
-        <button id="btn-reset" title="Forget all units and counts">Reset fleet</button>
+        <button id="btn-only" class="quiet" title="Show only the selected unit">Only this</button>
+        <button id="btn-hide" class="quiet" title="Hide the selected unit">Hide</button>
+        <button id="btn-restore" class="quiet" title="Show hidden units">Restore</button>
+        <button id="btn-reset" class="quiet" title="Forget all units and counts">Reset fleet</button>
       </div>
       <div class="scroll">
         <table id="fleet" class="grid">
           <thead><tr>
-            <th>CSID</th><th>State</th><th class="r">Age</th><th class="r">Counter</th><th class="r">Pkts</th>
-            <th class="r">Miss</th><th class="r">Rx %</th><th class="r">Resets</th><th class="r">Batt</th>
-            <th>Validity</th><th class="r">RSSI</th><th class="r">SNR</th><th class="r">Every</th><th>Rx</th>
+            <th>CSID</th><th>State</th><th class="r" title="Time since the last packet; the bar fills toward this unit's stale limit">Last heard</th><th class="r">Counter</th><th class="r">Packets</th>
+            <th class="r">Missed</th><th class="r">Rx %</th><th class="r">Resets</th><th>Battery</th>
+            <th>Sensors</th><th class="r">RSSI</th><th class="r">SNR</th><th class="r">Interval</th><th class="r">Heard by</th>
           </tr></thead>
           <tbody></tbody>
         </table>
-        <p id="fleet-empty" class="empty">No packets yet. Connect a T-Beam receiver or open a log.</p>
+        <p id="fleet-empty" class="empty">No packets yet. Connect a T-Beam receiver, or open a saved log to review it.</p>
       </div>
     </div>
 

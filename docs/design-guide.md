@@ -1,34 +1,41 @@
 # Design guide
 
-**Identity:** a ground-station console. Quiet chrome, mono numbers, one row per ChipSat. Colour only ever means link or sensor state.
+**Identity:** ground-station instrument software. Cool slate surfaces, one engineering typeface, numbers first. Colour only means state.
 
 ## Colour
 
-| Token | Meaning (only this) |
-|---|---|
-| `--good` `#0ca30c` | OK state, valid bit set, CRC pass |
-| `--warning` `#fab219` | Stale unit, saturation, receiver quiet |
-| `--serious` `#ec835a` | Low battery, weak RF |
-| `--critical` `#d03b3b` | Lost unit, invalid bit, CRC fail |
-| `--accent` (blue) | Selection only |
-| `--series-1..8` | Chart lines, fixed order (X Y Z, or receivers in connect order) |
+| Token | Light | Dark | Meaning (only this) |
+|---|---|---|---|
+| `--bg` | `#edf0f3` | `#0e151c` | App background |
+| `--panel` | `#ffffff` | `#151f29` | Panes |
+| `--ink` / `--ink-2` / `--ink-3` | `#18222c` / `#566474` / `#8a96a3` | `#e4eaf0` / `#a3b0bd` / `#6d7b89` | Values / labels / units, stale values |
+| `--accent` | `#2f6fdb` | `#5b92ea` | Selection, primary action |
+| `--good` | `#0f8a3c` | `#3cbf6a` | OK, valid bit, CRC pass |
+| `--warning` | `#b7791f` | `#e0a53a` | Stale, near stale, saturation |
+| `--serious` | `#c2572b` | `#e5794d` | Low battery, weak RF, resets |
+| `--critical` | `#c93434` | `#ec6464` | Lost, invalid bit, CRC fail |
+| `--series-1..8` | validated palette | | Chart lines in fixed order (X Y Z, or receivers in connect order), drawn at 70% opacity |
 
-- Status always comes with a glyph or a letter (● ◐ ○, L G M Q P S E F). Never colour alone.
-- Invalid data shows `—` plus the last trusted value in muted ink. It is never shown as live.
+- Status is never colour alone: a word ("Lost"), a letter (L G M Q P S E F) or a shape (hollow dot = lost).
+- An invalid field shows its last trusted value in `--ink-3`, or `—`.
 
 ## Type
 
-- UI labels: system sans.
-- Every changing number: system mono + `tabular-nums`.
-- No web fonts, so the page works offline.
+- IBM Plex Sans (400/500/600) for everything; tabular figures on the whole page.
+- IBM Plex Mono only for hex (CRC, validity mask).
+- Fonts are stored in `web/vendor/fonts/`, so the page works offline.
+- Sentence case everywhere. No all-caps labels, no middle-dot separators.
 
 ## Layout
 
-- Left: latest packet of the selected unit.
-- Right top: fleet list.
-- Right bottom: graph tabs.
-- Each pane scrolls on its own; the page never scrolls.
+- Left: the selected unit. Header (CSID, state, time), validity row, then lists by area (Link, GPS, Environment, Accelerometer, Gyroscope, Magnetometer, Orientation), flowing into two columns. Never scrolls.
+- Right top: fleet table. The header shows unit and packet counts; issue counts appear only when non-zero.
+- Right bottom: two wide chart columns, 190 px plots, no boxes. Single-series charts have no legend; the hover value appears beside the title.
+
+## The one distinctive element
+
+The "Last heard" cell: time since the last packet, over a thin bar that fills toward that unit's own stale limit (green, amber past two thirds, red once stale).
 
 ## Motion
 
-None, except a row flash when a new packet arrives.
+None.

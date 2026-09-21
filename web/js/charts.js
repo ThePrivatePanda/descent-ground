@@ -17,36 +17,36 @@
   // Tab -> panels -> series. `key` reads unit.history[key]; `rx` = per receiver.
   const TABS = [
     { id: 'overview', label: 'Overview', panels: [
-      { title: 'Packet counter', series: [{ key: 'counter', label: 'Counter' }] },
-      { title: 'Battery (%)', series: [{ key: 'battery', label: 'Battery' }] },
-      { title: 'RSSI, best receiver (dBm)', series: [{ key: 'rssi', label: 'RSSI' }] },
-      { title: 'SNR, best receiver (dB)', series: [{ key: 'snr', label: 'SNR' }] },
+      { title: 'Battery', unit: '%', series: [{ key: 'battery', label: 'Battery' }] },
+      { title: 'Pressure altitude', unit: 'm', series: [{ key: 'envAlt', label: 'Altitude' }] },
+      { title: 'RSSI, best receiver', unit: 'dBm', series: [{ key: 'rssi', label: 'RSSI' }] },
+      { title: 'SNR, best receiver', unit: 'dB', series: [{ key: 'snr', label: 'SNR' }] },
     ] },
     { id: 'imu', label: 'IMU', panels: [
-      { title: 'Linear acceleration (m/s²)', band: 'saturationMps2', series: [{ key: 'ax', label: 'X' }, { key: 'ay', label: 'Y' }, { key: 'az', label: 'Z' }] },
-      { title: 'Gyroscope (deg/s)', series: [{ key: 'gx', label: 'X' }, { key: 'gy', label: 'Y' }, { key: 'gz', label: 'Z' }] },
-      { title: 'Magnetometer (µT)', series: [{ key: 'mx', label: 'X' }, { key: 'my', label: 'Y' }, { key: 'mz', label: 'Z' }] },
+      { title: 'Linear acceleration', unit: 'm/s²', band: 'saturationMps2', series: [{ key: 'ax', label: 'X' }, { key: 'ay', label: 'Y' }, { key: 'az', label: 'Z' }] },
+      { title: 'Gyroscope', unit: 'deg/s', series: [{ key: 'gx', label: 'X' }, { key: 'gy', label: 'Y' }, { key: 'gz', label: 'Z' }] },
+      { title: 'Magnetometer', unit: 'µT', series: [{ key: 'mx', label: 'X' }, { key: 'my', label: 'Y' }, { key: 'mz', label: 'Z' }] },
       { title: 'Quaternion', series: [{ key: 'qi', label: 'i' }, { key: 'qj', label: 'j' }, { key: 'qk', label: 'k' }, { key: 'qr', label: 'real' }] },
     ] },
     { id: 'env', label: 'Environment', panels: [
-      { title: 'Temperature (°C)', series: [{ key: 'temp', label: 'Temperature' }] },
-      { title: 'Pressure (hPa)', series: [{ key: 'pressure', label: 'Pressure' }] },
-      { title: 'Humidity (%RH)', series: [{ key: 'humidity', label: 'Humidity' }] },
-      { title: 'Pressure altitude (m)', series: [{ key: 'envAlt', label: 'Altitude' }] },
+      { title: 'Temperature', unit: '°C', series: [{ key: 'temp', label: 'Temperature' }] },
+      { title: 'Pressure', unit: 'hPa', series: [{ key: 'pressure', label: 'Pressure' }] },
+      { title: 'Humidity', unit: '%RH', series: [{ key: 'humidity', label: 'Humidity' }] },
+      { title: 'Pressure altitude', unit: 'm', series: [{ key: 'envAlt', label: 'Altitude' }] },
     ] },
     { id: 'gps', label: 'GPS', panels: [
-      { title: 'GPS altitude MSL (m)', series: [{ key: 'gpsAlt', label: 'Altitude' }] },
-      { title: 'Latitude (deg)', series: [{ key: 'lat', label: 'Latitude' }] },
-      { title: 'Longitude (deg)', series: [{ key: 'lon', label: 'Longitude' }] },
+      { title: 'GPS altitude MSL', unit: 'm', series: [{ key: 'gpsAlt', label: 'Altitude' }] },
+      { title: 'Latitude', unit: 'deg', series: [{ key: 'lat', label: 'Latitude' }] },
+      { title: 'Longitude', unit: 'deg', series: [{ key: 'lon', label: 'Longitude' }] },
     ] },
     { id: 'radio', label: 'Radio', panels: [
-      { title: 'RSSI per receiver (dBm)', rx: 'rssi' },
-      { title: 'SNR per receiver (dB)', rx: 'snr' },
+      { title: 'RSSI per receiver', unit: 'dBm', rx: 'rssi' },
+      { title: 'SNR per receiver', unit: 'dB', rx: 'snr' },
     ] },
   ];
 
   const clock = (s) => new Date(s * 1000).toTimeString().slice(0, 8);
-  const HEAD_PX = 58;   // panel title + legend
+  const PLOT_H = 190;
 
   class Charts {
     constructor(container, tabsEl, rxLabel) {
@@ -70,14 +70,8 @@
       for (const b of this.tabsEl.children) b.classList.toggle('on', b.dataset.tab === this.tab);
     }
 
-    // Fit all panels of the tab into the pane: columns from the width,
-    // height shared between the rows.
     plotSize(box) {
-      const n = Math.max(1, this.el.children.length);
-      const cols = Math.max(1, getComputedStyle(this.el).gridTemplateColumns.split(' ').length);
-      const rows = Math.ceil(n / cols);
-      const h = Math.floor((this.el.clientHeight - 16 - 8 * (rows - 1)) / rows) - HEAD_PX;
-      return { width: Math.max(200, box.clientWidth - 12), height: Math.max(90, h) };
+      return { width: Math.max(240, box.clientWidth), height: PLOT_H };
     }
 
     resize() {
@@ -127,7 +121,10 @@
       const boxes = panels.map(({ panel }) => {
         const box = document.createElement('div');
         box.className = 'chart';
-        const h = document.createElement('h3'); h.textContent = panel.title; box.appendChild(h);
+        const h = document.createElement('h3'); h.textContent = panel.title;
+        if (panel.unit) { const u = document.createElement('span'); u.textContent = ' ' + panel.unit; h.appendChild(u); }
+        const readout = document.createElement('span'); readout.className = 'readout'; h.appendChild(readout);
+        box.appendChild(h);
         this.el.appendChild(box);
         return box;
       });
@@ -136,15 +133,17 @@
         if (!pd || pd.data[0].length === 0) {
           const n = document.createElement('div'); n.className = 'none';
           n.textContent = panel.rx ? 'No receiver data yet' : 'No valid data yet';
-          n.style.height = this.plotSize(box).height + 'px';
           box.appendChild(n);
           return;
         }
-        const grid = { stroke: css('--line'), width: 1 };
-        const axis = { stroke: css('--text-2'), grid, ticks: { stroke: css('--line') }, font: '11px ' + css('--sans') };
+        const grid = { stroke: css('--rule'), width: 1 };
+        const axis = { stroke: css('--ink-2'), grid, ticks: { stroke: css('--rule') }, font: '11px ' + css('--sans') };
         const few = pd.data[0].length < 40;
+        const single = pd.labels.length === 1;
+        const readout = box.querySelector('.readout');
         const opts = Object.assign(this.plotSize(box), {
-          legend: { live: true },
+          // One series: the title names it, so no legend; hover value goes next to the title.
+          legend: { show: !single, live: true },
           cursor: { points: { size: 7 }, drag: { x: false, y: false } },
           scales: { x: { time: true } },
           axes: [Object.assign({ values: (u, splits) => splits.map(clock) }, axis), Object.assign({ size: 56 }, axis)],
@@ -154,9 +153,17 @@
             value: (u, v) => (v == null ? '—' : +v.toFixed(5)),
           }))),
         });
+        opts.hooks = {};
+        if (single) {
+          opts.hooks.setCursor = [(u) => {
+            const i = u.cursor.idx;
+            const v = i == null ? null : u.data[1][i];
+            readout.textContent = v == null ? '' : +v.toFixed(5) + ' at ' + clock(u.data[0][i]);
+          }];
+        }
         const lim = panel.band && opt[panel.band];
         if (lim) {
-          opts.hooks = { draw: [(u) => {
+          opts.hooks.draw = [(u) => {
             // Shade beyond the saturation limit: the accelerometer is probably clipping there.
             const ctx = u.ctx; const { left, top, width, height } = u.bbox;
             ctx.save(); ctx.fillStyle = 'rgba(250,178,25,0.10)';
@@ -166,7 +173,7 @@
               if (y > top && y < top + height) ctx.fillRect(left, Math.min(y, edge), width, Math.abs(edge - y));
             }
             ctx.restore();
-          }] };
+          }];
         }
         this.plots.push({ u: new uPlot(opts, pd.data, box), box, panel });
       });

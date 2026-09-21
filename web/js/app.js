@@ -26,7 +26,7 @@
   }
   function rxName(rx) {
     const r = fleet().receivers.get(rx);
-    const name = r && r.id ? rx + ' · ' + r.id : rx;
+    const name = r && r.id ? rx + ' ' + r.id : rx;
     return name.length > 22 ? name.slice(0, 20) + '…' : name;
   }
 
@@ -83,7 +83,7 @@
     if (!recorder.canStream()) { toast('This browser cannot stream to a file; use Save session instead'); return; }
     try {
       await recorder.start(settings.fileTag);
-      b.textContent = '● Recording ' + recorder.fileName; b.classList.add('rec');
+      b.textContent = 'Recording ' + recorder.fileName; b.classList.add('rec');
     } catch (e) {
       if (e && e.name !== 'AbortError') toast('Could not start recording: ' + (e.message || e));
     }
@@ -330,25 +330,40 @@
     return Math.floor(s / 3600) + 'h' + String(Math.floor((s % 3600) / 60)).padStart(2, '0');
   }
 
-  function bits(mask, big) {
-    return '<span class="bits' + (big ? ' lg' : '') + '">' + P.VALIDITY_BITS.map((b) => {
+  function bits(mask) {
+    return '<span class="bits">' + P.VALIDITY_BITS.map((b) => {
       const on = (mask >> b.bit) & 1;
       return '<span class="' + (on ? '' : 'off') + '" title="' + b.name + (on ? ' valid' : ' NOT valid') + '">' + b.short + '</span>';
     }).join('') + '</span>';
   }
 
-  const STATE_GLYPH = { OK: '●', STALE: '◐', LOST: '○' };
-  const stateHtml = (st) => '<span class="state ' + st + '">' + STATE_GLYPH[st] + ' ' + st + '</span>';
+  const STATE_LABEL = { OK: 'OK', STALE: 'Stale', LOST: 'Lost' };
+  const stateHtml = (st) => '<span class="state ' + st + '">' + STATE_LABEL[st] + '</span>';
 
   function renderSummary(f, t) {
     const s = f.summary(t);
-    const item = (label, v, cls) => '<span class="' + (v && cls ? cls : '') + '">' + label + ' <b>' + v + '</b></span>';
-    $('summary').innerHTML = [
-      item('Heard', s.heard), item('Active', s.active), item('Stale', s.stale, 'warn'), item('Lost', s.lost, 'bad'),
-      item('Packets', s.packets), item('Bad CRC', s.badCrc, 'bad'), item('Low batt', s.lowBattery, 'warn'),
-      item('Validity issues', s.validityIssues, 'warn'), item('Weak RF', s.weakRf, 'warn'),
-      item('Saturated', s.saturated, 'warn'), item('Resets', s.resets, 'warn'),
-    ].join('');
+    // Always: how many units and packets. Problems: only when there are some.
+    const base = [['heard', s.heard], ['active', s.active], ['packets', s.packets]]
+      .map(([k, v]) => '<span><b>' + v + '</b> ' + k + '</span>');
+    const issues = [
+      ['stale', s.stale, ''], ['lost', s.lost, 'bad'], ['bad CRC', s.badCrc, 'bad'], ['low battery', s.lowBattery, ''],
+      ['with invalid sensors', s.validityIssues, ''], ['weak RF', s.weakRf, ''], ['saturated', s.saturated, ''], ['resets', s.resets, ''],
+    ].filter(([, v]) => v > 0).map(([k, v, c]) => '<span class="issue ' + c + '"><b>' + v + '</b> ' + k + '</span>');
+    $('summary').innerHTML = base.concat(issues).join('');
+  }
+
+  function ageCell(f, u, a) {
+    const limit = f.staleAfterMs(u);
+    const frac = Math.min(1, a / limit);
+    const cls = a > limit ? 'over' : frac > 0.66 ? 'near' : '';
+    return '<span class="age" title="Stale after ' + fmt(limit / 1000, 1) + ' s without a packet">' + age(a) +
+      '<i><b class="' + cls + '" style="width:' + (a > limit ? 100 : Math.max(2, frac * 100)).toFixed(0) + '%"></b></i></span>';
+  }
+
+  function battCell(d) {
+    if (!d.valid.soc) return '<span class="muted">—</span>';
+    const pct = Math.max(0, Math.min(100, d.values.battery));
+    return '<span class="batt' + (pct < settings.lowBatteryPct ? ' low' : '') + '"><i><b style="width:' + pct.toFixed(0) + '%"></b></i>' + fmt(pct, 1) + '%</span>';
   }
 
   function renderFleet(f, t) {
@@ -358,25 +373,22 @@
     const rxTotal = [...f.receivers.values()].filter((r) => r.packets > 0).length;
     $('fleet').querySelector('tbody').innerHTML = rows.map(({ unit: u, state, age: a }) => {
       const d = u.latest;
-      const batt = d.valid.soc ? fmt(d.values.battery, 1) + '%' : '—';
-      const battCls = d.valid.soc && d.values.battery < settings.lowBatteryPct ? ' warn-v' : '';
-      const rssiCls = u.bestRssi < settings.weakRssiDbm ? ' warn-v' : '';
-      const fresh = t - u.lastT < 300 ? ' flash' : '';
-      return '<tr data-csid="' + u.csid + '" class="' + (u.csid === view.sel ? 'sel' : '') + fresh + '">' +
+      const rssiCls = u.bestRssi < settings.weakRssiDbm ? ' serious' : '';
+      return '<tr data-csid="' + u.csid + '"' + (u.csid === view.sel ? ' class="sel"' : '') + '>' +
         '<td class="csid">' + u.csid + '</td>' +
-        '<td>' + stateHtml(state) + (d.saturated ? ' <span class="warn-v" title="Acceleration near the sensor limit">▲sat</span>' : '') + '</td>' +
-        '<td class="r">' + age(a) + '</td>' +
+        '<td>' + stateHtml(state) + (d.saturated ? '<span class="flag" title="Acceleration near the accelerometer limit">saturated</span>' : '') + '</td>' +
+        '<td class="r">' + ageCell(f, u, a) + '</td>' +
         '<td class="r">' + u.lastCounter + '</td>' +
         '<td class="r">' + u.packets + '</td>' +
-        '<td class="r">' + u.missed + '</td>' +
+        '<td class="r' + (u.missed ? '' : ' muted') + '">' + u.missed + '</td>' +
         '<td class="r">' + fmt(f.rxPercent(u), 1) + '</td>' +
-        '<td class="r' + (u.resets ? ' warn-v' : '') + '">' + u.resets + '</td>' +
-        '<td class="r' + battCls + '">' + batt + '</td>' +
+        '<td class="r' + (u.resets ? ' serious' : ' muted') + '">' + u.resets + '</td>' +
+        '<td>' + battCell(d) + '</td>' +
         '<td>' + bits(d.values.validity) + '</td>' +
         '<td class="r' + rssiCls + '">' + fmt(u.bestRssi, 1) + '</td>' +
         '<td class="r">' + fmt(u.bestSnr, 1) + '</td>' +
-        '<td class="r">' + (Number.isFinite(u.intervalMs) ? fmt(u.intervalMs / 1000, u.intervalMs < 10000 ? 2 : 0) + 's' : '—') + '</td>' +
-        '<td class="num" title="' + esc(u.receptions.map((r) => rxName(r.rx) + ' ' + fmt(r.rssi, 1) + ' dBm').join('\n')) + '">' + u.receptions.length + '/' + rxTotal + '</td>' +
+        '<td class="r">' + (Number.isFinite(u.intervalMs) ? fmt(u.intervalMs / 1000, u.intervalMs < 10000 ? 2 : 0) + ' s' : '—') + '</td>' +
+        '<td class="r" title="' + esc(u.receptions.map((r) => rxName(r.rx) + ': ' + fmt(r.rssi, 1) + ' dBm').join('\n')) + '">' + u.receptions.length + ' of ' + rxTotal + '</td>' +
         '</tr>';
     }).join('');
     const sel = $('sel-unit');
@@ -386,63 +398,61 @@
     if (view.sel !== null) sel.value = view.sel;
   }
 
-  // One value cell: live when its validity bit is set, otherwise the last
-  // trusted value in muted ink (or — if there never was one).
-  function cell(u, key, dec) {
+  // One list row. A field whose validity bit is clear shows the last trusted
+  // value in muted ink, or — if there never was one.
+  function fieldRow(u, label, key, dec, unit) {
     const fd = P.FIELDS.find((x) => x.key === key);
     const d = u.latest;
+    let v;
     if (d.valid[fd.group]) {
       const sat = fd.group === 'accel' && Math.abs(d.values[key]) >= settings.saturationMps2;
-      return '<td class="v' + (sat ? ' warn-v' : '') + '"' + (sat ? ' title="Near the accelerometer limit"' : '') + '>' + (sat ? '▲' : '') + fmt(d.values[key], dec) + '</td>';
+      v = '<dd class="v' + (sat ? ' sat' : '') + '"' + (sat ? ' title="Near the accelerometer limit"' : '') + '>' + fmt(d.values[key], dec) + '</dd>';
+    } else {
+      const lv = u.lastValid[key];
+      v = '<dd class="v stale" title="Not valid in this packet' + (lv !== undefined ? '. Last trusted value shown.' : '') + '">' + (lv !== undefined ? fmt(lv, dec) : '—') + '</dd>';
     }
-    const lv = u.lastValid[key];
-    return '<td class="v stale" title="Not valid in this packet' + (lv !== undefined ? '; last trusted value shown' : '') + '">' + (lv !== undefined ? fmt(lv, dec) : '—') + '</td>';
+    return '<dt>' + label + '</dt>' + v + '<dd class="u">' + unit + '</dd>';
   }
+  const plainRow = (label, value, unit, cls) => '<dt>' + label + '</dt><dd class="v ' + (cls || '') + '">' + value + '</dd><dd class="u">' + (unit || '') + '</dd>';
 
-  function sectTitle(u, name, group) {
-    return '<h3>' + name + (u.latest.valid[group] ? '' : ' <span class="bad-v">not valid</span>') + '</h3>';
+  function list(title, rows, group, d) {
+    const note = group && !d.valid[group] ? ' <span class="note bad">not valid</span>' : '';
+    return '<section class="list"><h3>' + title + note + '</h3><dl>' + rows.join('') + '</dl></section>';
   }
 
   function renderLatest(f, t) {
     if (view.paused) return;
     const u = view.sel === null ? null : f.units.get(view.sel);
     const el = $('latest');
-    if (!u) { el.innerHTML = '<div class="none">No unit selected</div>'; return; }
+    if (!u) { el.innerHTML = '<div class="none">Select a unit in the fleet list.</div>'; return; }
     const d = u.latest;
-    const stat = (k, v, title) => '<div class="stat"' + (title ? ' title="' + esc(title) + '"' : '') + '><div class="k">' + k + '</div><div class="v">' + v + '</div></div>';
-    const crc = d.crcOk ? '<span style="color:var(--good)">✓</span> ' + d.crcReceived.toString(16).toUpperCase().padStart(4, '0') : '<span class="bad-v">✗ fail</span>';
-    const kv = (label, key, dec, unit) => '<tr><td class="k">' + label + '</td>' + cell(u, key, dec) + '<td class="u">' + unit + '</td></tr>';
-    // Vector rows have 4 value columns; 3-axis sensors leave "real" empty.
-    const vec = (label, keys, dec, unit) => '<tr><td class="k">' + label + '</td>' + keys.map((k) => cell(u, k, dec)).join('') +
-      (keys.length === 3 ? '<td></td>' : '') + '<td class="u">' + unit + '</td></tr>';
-    const imuBad = ['accel', 'gyro', 'mag', 'quat'].filter((g) => !d.valid[g]);
-
+    const st = f.state(u, t);
+    const crcOk = d.crcOk
+      ? '<span class="good" title="' + (u.latestSource === 'csv' ? 'Old CSV receiver: packet rebuilt from the printed values to check the CRC' : 'CRC matches') + '">pass</span>'
+      : '<span class="bad">fail</span>';
+    const rx = u.receptions.map((r) => plainRow(esc(rxName(r.rx)), fmt(r.rssi, 1) + ' / ' + fmt(r.snr, 1), 'dBm/dB'));
     el.innerHTML =
-      '<div class="lp-head"><span class="id">CSID ' + u.csid + '</span>' + stateHtml(f.state(u, t)) +
-        (d.saturated ? '<span class="warn-v">▲ accel saturated</span>' : '') +
-        '<span class="age">' + age(t - u.lastT) + ' ago</span></div>' +
-      '<div class="stats">' +
-        stat('Counter', d.values.counter) +
-        stat('Battery', d.valid.soc ? fmt(d.values.battery, 1) + '%' : '—') +
-        stat('Every', Number.isFinite(u.intervalMs) ? fmt(u.intervalMs / 1000, 2) + 's' : '—') +
-        stat('CRC', crc, u.latestSource === 'csv' ? 'Old CSV receiver: packet rebuilt from the printed values to check the CRC' : '') +
-        stat('Packets', u.packets) + stat('Missed', u.missed) + stat('Resets', u.resets) + stat('Rx %', fmt(f.rxPercent(u), 1)) +
-      '</div>' +
-      '<div>' + bits(d.values.validity, true) + ' <span class="stale-note">0x' + d.values.validity.toString(16).toUpperCase().padStart(2, '0') + '</span></div>' +
-      '<div class="rxlist">' + (u.receptions.map((r) => '<span>' + esc(rxName(r.rx)) + ' ' + fmt(r.rssi, 1) + ' dBm / ' + fmt(r.snr, 1) + ' dB</span>').join('') || '—') + '</div>' +
-      '<div class="two">' +
-        '<div class="sect">' + sectTitle(u, 'GPS', 'gps') + '<table class="vals">' +
-          kv('Latitude', 'lat', 6, '°') + kv('Longitude', 'lon', 6, '°') + kv('Altitude', 'gpsAlt', 1, 'm') + '</table></div>' +
-        '<div class="sect">' + sectTitle(u, 'Environment', 'env') + '<table class="vals">' +
-          kv('Temp', 'temp', 2, '°C') + kv('Pressure', 'pressure', 1, 'hPa') + kv('Humidity', 'humidity', 1, '%') + kv('Altitude', 'envAlt', 1, 'm') + '</table></div>' +
-      '</div>' +
-      '<div class="sect"><h3>IMU' + (imuBad.length ? ' <span class="bad-v">not valid: ' + imuBad.join(', ') + '</span>' : '') + '</h3><table class="vals">' +
-        '<tr><th></th><th>X / i</th><th>Y / j</th><th>Z / k</th><th>real</th><th></th></tr>' +
-        vec('Accel', ['ax', 'ay', 'az'], 2, 'm/s²') +
-        vec('Gyro', ['gx', 'gy', 'gz'], 1, 'deg/s') +
-        vec('Mag', ['mx', 'my', 'mz'], 1, 'µT') +
-        vec('Quat', ['qi', 'qj', 'qk', 'qr'], 4, '') +
-      '</table></div>';
+      '<div class="unit-head"><span class="id"><small>CSID</small>' + u.csid + '</span>' + stateHtml(st) +
+        (d.saturated ? '<span class="flag">accel saturated</span>' : '') +
+        '<span class="when"><b>' + new Date(u.lastT).toTimeString().slice(0, 8) + '</b>' + age(t - u.lastT) + ' ago</span></div>' +
+      '<div class="validity-line">' + bits(d.values.validity) + '<span class="hex">0x' + d.values.validity.toString(16).toUpperCase().padStart(2, '0') + '</span></div>' +
+      '<div class="lists">' +
+        list('Link', [
+          plainRow('Counter', d.values.counter),
+          plainRow('Battery', d.valid.soc ? fmt(d.values.battery, 1) : '—', '%', d.valid.soc ? '' : 'stale'),
+          plainRow('Interval', Number.isFinite(u.intervalMs) ? fmt(u.intervalMs / 1000, 2) : '—', 's'),
+          plainRow('CRC', crcOk + ' <span class="hex muted">' + d.crcReceived.toString(16).toUpperCase().padStart(4, '0') + '</span>'),
+          plainRow('Packets', u.packets), plainRow('Missed', u.missed), plainRow('Resets', u.resets),
+          plainRow('Received', fmt(f.rxPercent(u), 1), '%'),
+        ].concat(rx)) +
+        list('GPS', [fieldRow(u, 'Latitude', 'lat', 6, '°'), fieldRow(u, 'Longitude', 'lon', 6, '°'), fieldRow(u, 'Altitude MSL', 'gpsAlt', 1, 'm')], 'gps', d) +
+        list('Environment', [fieldRow(u, 'Temperature', 'temp', 2, '°C'), fieldRow(u, 'Pressure', 'pressure', 1, 'hPa'),
+          fieldRow(u, 'Humidity', 'humidity', 1, '%'), fieldRow(u, 'Pressure altitude', 'envAlt', 1, 'm')], 'env', d) +
+        list('Accelerometer', ['x', 'y', 'z'].map((a) => fieldRow(u, a.toUpperCase(), 'a' + a, 2, 'm/s²')), 'accel', d) +
+        list('Gyroscope', ['x', 'y', 'z'].map((a) => fieldRow(u, a.toUpperCase(), 'g' + a, 1, 'deg/s')), 'gyro', d) +
+        list('Magnetometer', ['x', 'y', 'z'].map((a) => fieldRow(u, a.toUpperCase(), 'm' + a, 1, 'µT')), 'mag', d) +
+        list('Orientation', [['i', 'qi'], ['j', 'qj'], ['k', 'qk'], ['Real', 'qr']].map(([l, k]) => fieldRow(u, l, k, 4, '')), 'quat', d) +
+      '</div>';
   }
 
   function renderReceivers() {
@@ -454,18 +464,19 @@
       const port = hub.ports.find((p) => p.key === k);
       const m = meta(k);
       let st = 'no data'; let cls = 'warning';
-      if (port && port.status !== 'open') { st = port.status; cls = 'critical'; } else if (r && t - r.lastT < 7000) { st = 'live'; cls = 'good'; } else if (r) { st = 'quiet ' + age(t - r.lastT); }
-      const sf = r && r.info.sf ? ' SF' + r.info.sf : '';
-      const kind = m.source === 'csv' ? ' CSV' : m.source === 'raw' ? ' raw' : '';
-      const nums = r ? r.unique + ' new · ' + (r.packets - r.unique - r.badCrc) + ' dup' + (r.badCrc ? ' · ' + r.badCrc + ' bad' : '') + (r.radioErrors ? ' · ' + r.radioErrors + ' err' : '') : '';
-      return '<span class="rx" title="' + esc((port && port.usb ? 'USB ' + port.usb + '\n' : '') + (port && port.error ? port.error : '')) + '">' +
+      if (port && port.status !== 'open') { st = port.status; cls = 'critical'; } else if (r && t - r.lastT < 7000) { st = 'live'; cls = 'good'; } else if (r) { st = 'quiet for ' + age(t - r.lastT); }
+      const kind = m.source === 'csv' ? 'CSV firmware' : m.source === 'raw' ? 'raw firmware' : '';
+      const detail = [kind, r && r.info.sf ? 'SF' + r.info.sf : '', r ? r.unique + ' new, ' + (r.packets - r.unique - r.badCrc) + ' duplicate' : '',
+        r && r.badCrc ? r.badCrc + ' bad CRC' : '', r && r.radioErrors ? r.radioErrors + ' radio errors' : '', port && port.usb ? 'USB ' + port.usb : '', port && port.error ? port.error : '']
+        .filter(Boolean).join('\n');
+      return '<span class="rx" title="' + esc(detail) + '">' +
         '<span class="sw" style="background:var(--series-' + (m.index + 1) + ')"></span>' +
-        '<b>' + esc(rxName(k)) + '</b><span class="st ' + cls + '">' + st + '</span>' +
-        '<span class="meta">' + kind + sf + ' ' + nums + '</span>' +
-        (port && port.status === 'open' ? '<button data-close="' + k + '" title="Disconnect">×</button>' : '') + '</span>';
+        '<span class="name">' + esc(rxName(k)) + '</span><span class="st ' + cls + '">' + st + '</span>' +
+        (r ? '<span class="meta">' + r.unique + ' packets</span>' : '') +
+        (port && port.status === 'open' ? '<button data-close="' + k + '" title="Disconnect" aria-label="Disconnect ' + esc(k) + '">✕</button>' : '') + '</span>';
     }).join('');
     const sfs = new Set([...f.receivers.values()].map((r) => r.info.sf).filter(Boolean));
-    if (sfs.size > 1) $('receivers').insertAdjacentHTML('beforeend', '<span class="rx"><span class="st critical">▲ receivers disagree on SF</span></span>');
+    if (sfs.size > 1) $('receivers').insertAdjacentHTML('beforeend', '<span class="rx"><span class="st critical">receivers disagree on SF</span></span>');
     $('mode').textContent = view.replay ? 'Replaying ' + view.replay.names.join(', ') : (recorder.lines ? recorder.lines + ' lines this session' : '');
   }
   $('receivers').addEventListener('click', (e) => {
