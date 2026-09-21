@@ -20,7 +20,7 @@
   const LOW_BATTERY_PCT = 20;
   const WEAK_RSSI_DBM = -115;
 
-  const SERIES = ['counter', 'battery', 'rssi', 'snr'].concat(
+  const SERIES = ['counter', 'rssi', 'snr'].concat(
     P.FIELDS.filter((f) => f.group).map((f) => f.key));
 
   function median(a) {
@@ -160,8 +160,8 @@
       const h = u.history;
       h.t.push(Math.round(t) / 1000);
       h.counter.push(d.values.counter);
-      h.battery.push(d.valid.soc ? d.values.battery : null);
       h.rssi.push(null); h.snr.push(null);
+      // Every field with a validity group, battery included; null when invalid.
       for (const f of P.FIELDS) if (f.group) h[f.key].push(d.valid[f.group] ? d.values[f.key] : null);
       if (h.t.length > HISTORY_MAX) for (const k in h) h[k].shift();
     }

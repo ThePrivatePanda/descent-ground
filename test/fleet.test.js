@@ -41,6 +41,12 @@ test('real log: resets, misses and interval match the ground survey', () => {
   assert.ok(Math.abs(u7.intervalMs - 122000) < 1500);
   assert.strictEqual(fleet.units.get(5).resets, 4);
   assert.strictEqual(fleet.badCrc, 0);
+  // Every history series lines up with the time axis.
+  for (const u of fleet.units.values()) {
+    for (const [k, col] of Object.entries(u.history)) assert.strictEqual(col.length, u.history.t.length, 'series ' + k);
+  }
+  const u2 = fleet.units.get(2);
+  assert.strictEqual(u2.history.battery.at(-1), u2.latest.values.battery);
 });
 
 test('real overnight log: three units, CSID 4 resets 31 times', () => {
