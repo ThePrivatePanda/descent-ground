@@ -19,8 +19,16 @@
   <button id="btn-record" title="Stream every received line to a file on this computer">Record to file</button>
   <button id="btn-save" title="Download everything received this session">Save session</button>
   <label class="button" title="Open saved logs, including old lab CSV logs">Open log<input id="file-open" type="file" multiple accept=".txt,.log,.csv,.tsv" hidden></label>
+  <button id="btn-settings" title="Graph, status and saving settings">Settings</button>
   <button id="btn-theme" title="Switch light / dark">◑</button>
 </header>
+
+<div id="recover" class="banner" hidden>
+  <span id="recover-text"></span>
+  <button id="recover-open">Open</button>
+  <button id="recover-download">Download</button>
+  <button id="recover-discard">Discard</button>
+</div>
 
 <div id="replay" class="replaybar" hidden>
   <button id="rp-play">Play</button>
@@ -41,9 +49,10 @@
     <div class="pane-head">
       <h2>Latest packet</h2>
       <select id="sel-unit" title="Unit shown"></select>
-      <button id="btn-pause" title="Freeze this table">Pause</button>
+      <span class="spacer"></span>
+      <button id="btn-pause" title="Freeze this panel">Pause</button>
     </div>
-    <div class="scroll"><table id="latest" class="kv"></table></div>
+    <div id="latest" class="latest"></div>
   </section>
 
   <section class="right">
@@ -79,15 +88,26 @@
         <h2 id="graph-title">History</h2>
         <nav id="tabs" class="tabs"></nav>
         <span class="spacer"></span>
-        <select id="window" title="Time shown">
-          <option value="60">Last 1 min</option><option value="300" selected>Last 5 min</option>
-          <option value="1800">Last 30 min</option><option value="0">All</option>
-        </select>
+        <select id="window" title="Time shown on the graphs"></select>
       </div>
-      <div id="charts" class="charts scroll"></div>
+      <div id="charts" class="charts"></div>
     </div>
   </section>
 </main>
+
+<aside id="settings" class="drawer" hidden>
+  <div class="drawer-head">
+    <h2>Settings</h2>
+    <span class="spacer"></span>
+    <button id="settings-close">Close</button>
+  </div>
+  <form id="settings-form" class="drawer-body" autocomplete="off"></form>
+  <div class="drawer-foot">
+    <span class="note">Saved in this browser as you change them.</span>
+    <span class="spacer"></span>
+    <button id="settings-reset">Reset to defaults</button>
+  </div>
+</aside>
 
 <div id="toast" class="toast" hidden></div>
 
@@ -95,6 +115,7 @@
 <script src="js/packet.js"></script>
 <script src="js/lines.js"></script>
 <script src="js/fleet.js"></script>
+<script src="js/store.js"></script>
 <script src="js/serial.js"></script>
 <script src="js/recorder.js"></script>
 <script src="js/charts.js"></script>

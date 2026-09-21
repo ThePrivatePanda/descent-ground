@@ -9,16 +9,23 @@
 })(typeof self !== 'undefined' ? self : this, function (P) {
   'use strict';
 
-  const LOST_MS = 10 * 60 * 1000;      // user rule: silent for 10 min = lost
-  const STALE_FACTOR = 3;              // stale after 3 missed intervals
-  const STALE_MIN_MS = 5000;
+  // Every threshold the user can change in Settings. Fleet copies these;
+  // setConfig() replaces them.
+  const DEFAULTS = {
+    lostMin: 10,              // silent this long = lost (user rule)
+    staleFactor: 3,           // stale after this many missed intervals
+    staleMinS: 5,
+    dedupeMs: 1500,           // same bytes within this window = same over-the-air packet
+    retainMin: 0,             // drop history older than this (0 = keep everything)
+    maxPoints: 20000,         // history points kept per unit
+    lowBatteryPct: 20,
+    weakRssiDbm: -115,
+    saturationMps2: 75,       // BNO085 accelerometer range is ±8 g (≈78 m/s²)
+  };
+  const LOST_MS = DEFAULTS.lostMin * 60000;
   const STALE_DEFAULT_MS = 30000;      // before the interval is known
-  const DEDUPE_MS = 1500;              // same bytes within this window = same over-the-air packet
   const WRAP_SLACK = 1000;             // counter 65xxx -> small = wrap, not reset
-  const HISTORY_MAX = 20000;           // points kept per unit (~5.5 h at 1 Hz)
   const INTERVAL_SAMPLES = 15;
-  const LOW_BATTERY_PCT = 20;
-  const WEAK_RSSI_DBM = -115;
 
   const SERIES = ['counter', 'rssi', 'snr'].concat(
     P.FIELDS.filter((f) => f.group).map((f) => f.key));
@@ -52,7 +59,12 @@
   }
 
   class Fleet {
-    constructor() { this.clear(); }
+    constructor(cfg) { this.cfg = Object.assign({}, DEFAULTS, cfg); this.clear(); }
+
+    setConfig(cfg) {
+      this.cfg = Object.assign({}, DEFAULTS, cfg);
+      for (const u of this.units.values()) this.trimHistory(u);
+    }
 
     clear() {
       this.units = new Map();
@@ -92,7 +104,7 @@
       r.packets++;
       if (!ev.decoded.crcOk) { r.badCrc++; this.badCrc++; return 'badcrc'; }
 
-      for (const [hex, seen] of this.recent) if (t - seen.t > DEDUPE_MS) this.recent.delete(hex);
+      for (const [hex, seen] of this.recent) if (t - seen.t > this.cfg.dedupeMs) this.recent.delete(hex);
       const seen = this.recent.get(ev.hex);
       if (seen) {
         this.duplicates++;
@@ -103,6 +115,7 @@
       r.unique++;
       this.total++;
       const d = ev.decoded;
+      d.saturated = d.valid.accel && ['ax', 'ay', 'az'].some((k) => Math.abs(d.values[k]) >= this.cfg.saturationMps2);
       const csid = d.values.csid;
       this.recent.set(ev.hex, { t, csid });
       let u = this.units.get(csid);
@@ -146,7 +159,6 @@
       let h = u.rxHistory[rx];
       if (!h) h = u.rxHistory[rx] = { t: [], rssi: [], snr: [] };
       h.t.push(t / 1000); h.rssi.push(ev.rssi); h.snr.push(ev.snr);
-      if (h.t.length > HISTORY_MAX) { h.t.shift(); h.rssi.shift(); h.snr.shift(); }
       // Best-of-receivers values for the latest history point.
       const hist = u.history;
       const i = hist.t.length - 1;
@@ -163,17 +175,31 @@
       h.rssi.push(null); h.snr.push(null);
       // Every field with a validity group, battery included; null when invalid.
       for (const f of P.FIELDS) if (f.group) h[f.key].push(d.valid[f.group] ? d.values[f.key] : null);
-      if (h.t.length > HISTORY_MAX) for (const k in h) h[k].shift();
+      this.trimHistory(u);
+    }
+
+    // Drop history older than the retention time and beyond the point cap.
+    trimHistory(u) {
+      const cut = (h) => {
+        let n = Math.max(0, h.t.length - this.cfg.maxPoints);
+        if (this.cfg.retainMin > 0 && h.t.length) {
+          const oldest = h.t[h.t.length - 1] - this.cfg.retainMin * 60;
+          while (n < h.t.length && h.t[n] < oldest) n++;
+        }
+        if (n > 0) for (const k in h) h[k].splice(0, n);
+      };
+      cut(u.history);
+      for (const k in u.rxHistory) cut(u.rxHistory[k]);
     }
 
     staleAfterMs(u) {
       return Number.isFinite(u.intervalMs)
-        ? Math.max(STALE_MIN_MS, STALE_FACTOR * u.intervalMs) : STALE_DEFAULT_MS;
+        ? Math.max(this.cfg.staleMinS * 1000, this.cfg.staleFactor * u.intervalMs) : STALE_DEFAULT_MS;
     }
 
     state(u, now) {
       const age = now - u.lastT;
-      if (age > LOST_MS) return 'LOST';
+      if (age > this.cfg.lostMin * 60000) return 'LOST';
       if (age > this.staleAfterMs(u)) return 'STALE';
       return 'OK';
     }
@@ -182,9 +208,9 @@
       const out = [];
       const d = u.latest;
       if (!d) return out;
-      if (d.valid.soc && d.values.battery < LOW_BATTERY_PCT) out.push('low battery');
+      if (d.valid.soc && d.values.battery < this.cfg.lowBatteryPct) out.push('low battery');
       for (const v of P.VALIDITY_BITS) if (v.bit < 7 && !d.valid[v.key]) out.push(v.name + ' invalid');
-      if (Number.isFinite(u.bestRssi) && u.bestRssi < WEAK_RSSI_DBM) out.push('weak RF');
+      if (Number.isFinite(u.bestRssi) && u.bestRssi < this.cfg.weakRssiDbm) out.push('weak RF');
       if (d.saturated) out.push('accel saturated');
       return out;
     }
@@ -223,9 +249,9 @@
         const st = this.state(u, now);
         if (st === 'OK') s.active++; else if (st === 'STALE') s.stale++; else s.lost++;
         const d = u.latest;
-        if (d.valid.soc && d.values.battery < LOW_BATTERY_PCT) s.lowBattery++;
+        if (d.valid.soc && d.values.battery < this.cfg.lowBatteryPct) s.lowBattery++;
         if ((d.values.validity & 0x7f) !== 0x7f) s.validityIssues++;
-        if (Number.isFinite(u.bestRssi) && u.bestRssi < WEAK_RSSI_DBM) s.weakRf++;
+        if (Number.isFinite(u.bestRssi) && u.bestRssi < this.cfg.weakRssiDbm) s.weakRf++;
         if (d.saturated) s.saturated++;
         s.resets += u.resets;
       }
@@ -233,5 +259,5 @@
     }
   }
 
-  return { Fleet, LOST_MS, SERIES, LOW_BATTERY_PCT, WEAK_RSSI_DBM, DEDUPE_MS };
+  return { Fleet, DEFAULTS, LOST_MS, SERIES };
 });

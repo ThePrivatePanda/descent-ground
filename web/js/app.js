@@ -1,24 +1,27 @@
-// Wires the page together: serial / log input -> fleet -> tables and charts.
+// Wires the page together: serial / log input -> fleet -> panels and charts.
 (function () {
   'use strict';
-  const { packet: P, lines: L, fleet: F, recorder: R } = DG;
+  const { packet: P, lines: L, fleet: F, recorder: R, store: S } = DG;
   const $ = (id) => document.getElementById(id);
 
-  const live = new F.Fleet();
+  let settings = S.loadSettings();
+  const live = new F.Fleet(settings);
   const recorder = new R.Recorder();
-  const rxMeta = new Map();   // rxKey -> {index, source, lastLineT}
+  const autosave = new S.Autosave();
+  const rxMeta = new Map();   // rxKey -> {index, source}
   let rxCount = 0;
 
   const view = {
-    sel: null, paused: false, sort: 'attention', windowS: 300,
+    sel: null, paused: false, sort: 'attention',
     replay: null,   // {events, pos, clock, playing, speed, fleet, names}
   };
   const fleet = () => (view.replay ? view.replay.fleet : live);
   const now = () => (view.replay ? view.replay.clock : Date.now());
+  const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 
   function meta(rx) {
     let m = rxMeta.get(rx);
-    if (!m) { m = { index: rxCount++ % 8, source: null, lastLineT: 0 }; rxMeta.set(rx, m); }
+    if (!m) { m = { index: rxCount++ % 8, source: null }; rxMeta.set(rx, m); }
     return m;
   }
   function rxName(rx) {
@@ -32,11 +35,18 @@
     clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 3000);
   }
 
+  function download(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
   // ---------- input ----------
   function ingestLine(target, rx, text, t) {
     const ev = L.parseLine(text);
     const m = meta(rx);
-    m.lastLineT = t;
     if (ev.kind === 'packet' || ev.kind === 'badlength') m.source = ev.source;
     if (ev.kind === 'rxinfo') m.source = 'raw';
     return target.ingest(ev, t, rx);
@@ -45,11 +55,9 @@
   const hub = new DG.SerialHub((rx, text) => {
     const t = Date.now();
     recorder.add(t, rx, text);
-    const r = ingestLine(live, rx, text, t);
-    if (r === 'new' && !view.replay) flashNew = true;
+    if (settings.autosave) autosave.add(R.formatLine(t, rx, text));
+    ingestLine(live, rx, text, t);
   }, () => renderReceivers());
-
-  let flashNew = false;
 
   if (!hub.supported) { $('unsupported').hidden = false; $('btn-connect').disabled = true; $('btn-record').disabled = true; }
 
@@ -74,7 +82,7 @@
     }
     if (!recorder.canStream()) { toast('This browser cannot stream to a file; use Save session instead'); return; }
     try {
-      await recorder.start();
+      await recorder.start(settings.fileTag);
       b.textContent = '● Recording ' + recorder.fileName; b.classList.add('rec');
     } catch (e) {
       if (e && e.name !== 'AbortError') toast('Could not start recording: ' + (e.message || e));
@@ -82,16 +90,43 @@
   });
 
   $('btn-save').addEventListener('click', () => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(recorder.sessionBlob());
-    a.download = 'descent-session-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.log';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    download(recorder.sessionBlob(), settings.fileTag + '-session-' + stamp() + '.log');
     toast('Saved ' + recorder.lines + ' lines');
   });
 
   window.addEventListener('beforeunload', (e) => {
     if (recorder.writable || live.total > 0) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  // ---------- crash autosave ----------
+  function armAutosave() {
+    clearInterval(armAutosave.timer);
+    if (settings.autosave) armAutosave.timer = setInterval(() => autosave.flush().catch(() => {}), settings.autosaveS * 1000);
+  }
+  armAutosave();
+
+  let recovering = null;
+  autosave.previous().then((list) => {
+    const withLines = list.filter((s) => s.lines > 0);
+    if (!withLines.length) return;
+    recovering = withLines[0];
+    $('recover-text').textContent = 'Unsaved session from ' + new Date(recovering.started).toLocaleString() +
+      ' (' + recovering.lines + ' lines) is still in this browser.' + (withLines.length > 1 ? ' ' + (withLines.length - 1) + ' older.' : '');
+    $('recover').hidden = false;
+  }).catch(() => {});
+
+  const recoveredText = async () => R.HEADER + ' recovered ' + recovering.started + '\n' + await autosave.text(recovering.id);
+  $('recover-open').addEventListener('click', async () => {
+    const events = R.parseLogFile(await recoveredText(), 'recovered', 0);
+    if (events.length) startReplay(events, ['recovered session']);
+  });
+  $('recover-download').addEventListener('click', async () => {
+    download(new Blob([await recoveredText()], { type: 'text/plain' }), settings.fileTag + '-recovered-' + recovering.started.slice(0, 19).replace(/[:T]/g, '-') + '.log');
+  });
+  $('recover-discard').addEventListener('click', async () => {
+    await autosave.remove(recovering.id);
+    $('recover').hidden = true;
+    toast('Discarded the stored session');
   });
 
   // ---------- replay ----------
@@ -109,7 +144,7 @@
 
   function startReplay(events, names) {
     stopPlay();
-    view.replay = { events, pos: 0, clock: events[0].t, playing: false, speed: +$('rp-speed').value, fleet: new F.Fleet(), names };
+    view.replay = { events, pos: 0, clock: events[0].t, playing: false, speed: +$('rp-speed').value, fleet: new F.Fleet(settings), names };
     view.sel = null;
     $('replay').hidden = false;
     $('rp-pos').max = events.length;
@@ -119,10 +154,11 @@
 
   function seek(pos) {
     const r = view.replay;
-    if (pos < r.pos) { r.fleet = new F.Fleet(); r.pos = 0; }
+    if (pos < r.pos) { r.fleet = new F.Fleet(settings); r.pos = 0; }
     while (r.pos < pos) { const e = r.events[r.pos++]; ingestLine(r.fleet, e.rx, e.text, e.t); }
     r.clock = r.pos ? r.events[r.pos - 1].t : r.events[0].t;
     $('rp-pos').value = r.pos;
+    $('rp-time').textContent = new Date(r.clock).toTimeString().slice(0, 8);
     render(true);
   }
 
@@ -157,7 +193,6 @@
 
   // ---------- fleet controls ----------
   $('sort').addEventListener('change', (e) => { view.sort = e.target.value; render(); });
-  $('window').addEventListener('change', (e) => { view.windowS = +e.target.value; render(true); });
   $('btn-pause').addEventListener('click', (e) => {
     view.paused = !view.paused;
     e.target.textContent = view.paused ? 'Resume' : 'Pause';
@@ -184,6 +219,93 @@
     const tr = e.target.closest('tr');
     if (tr) { view.sel = +tr.dataset.csid; render(true); }
   });
+
+  // ---------- settings ----------
+  const MIN = (n) => [n, n ? 'Last ' + n + ' min' : 'All data kept'];
+  const FIELDS = [
+    { section: 'Graphs' },
+    { key: 'graphWindowMin', label: 'Time shown', type: 'select', options: [0, 1, 5, 15, 30, 60].map(MIN),
+      hint: 'Counted back from the newest packet.' },
+    { key: 'retainMin', label: 'Drop graph data older than', type: 'select',
+      options: [[0, 'Never'], [5, '5 min'], [15, '15 min'], [30, '30 min'], [60, '1 hour'], [180, '3 hours']],
+      hint: 'Packet counts, misses and resets are never dropped; only graph history.' },
+    { key: 'maxPoints', label: 'Max graph points per unit', type: 'number', min: 100, step: 100 },
+    { key: 'lineWidth', label: 'Line width', type: 'select', options: [[1, 'Thin'], [1.25, 'Normal'], [2, 'Thick']] },
+    { section: 'Status' },
+    { key: 'lostMin', label: 'Lost after silence of (min)', type: 'number', min: 1, step: 1 },
+    { key: 'staleFactor', label: 'Stale after missed intervals', type: 'number', min: 1, step: 0.5 },
+    { key: 'staleMinS', label: 'Stale no sooner than (s)', type: 'number', min: 1, step: 1 },
+    { key: 'lowBatteryPct', label: 'Low battery below (%)', type: 'number', min: 0, max: 100, step: 1 },
+    { key: 'weakRssiDbm', label: 'Weak RF below (dBm)', type: 'number', max: 0, step: 1 },
+    { key: 'saturationMps2', label: 'Accel saturation at (m/s²)', type: 'number', min: 1, step: 1,
+      hint: 'BNO085 range is ±8 g ≈ 78 m/s².' },
+    { key: 'dedupeMs', label: 'Same packet across receivers within (ms)', type: 'number', min: 100, step: 100 },
+    { section: 'Saving' },
+    { key: 'autosave', label: 'Autosave session in this browser', type: 'checkbox',
+      hint: 'Survives a crashed tab or laptop; offered for recovery on the next visit.' },
+    { key: 'autosaveS', label: 'Autosave every (s)', type: 'number', min: 1, step: 1 },
+    { key: 'fileTag', label: 'File name prefix', type: 'text' },
+  ];
+
+  function buildSettingsForm() {
+    const form = $('settings-form');
+    form.innerHTML = '';
+    for (const f of FIELDS) {
+      if (f.section) { const h = document.createElement('h3'); h.textContent = f.section; form.appendChild(h); continue; }
+      const row = document.createElement('div'); row.className = 'field';
+      const id = 'set-' + f.key;
+      let input;
+      if (f.type === 'select') {
+        input = document.createElement('select');
+        for (const [v, label] of f.options) input.add(new Option(label, v));
+        // A value saved by an older version may no longer be offered: use the nearest option.
+        if (!f.options.some(([v]) => v === settings[f.key])) {
+          const near = f.options.reduce((a, b) => (Math.abs(b[0] - settings[f.key]) < Math.abs(a[0] - settings[f.key]) ? b : a))[0];
+          settings = Object.assign({}, settings, { [f.key]: near });
+          S.saveSettings(settings);
+        }
+        input.value = settings[f.key];
+      } else {
+        input = document.createElement('input');
+        input.type = f.type;
+        for (const a of ['min', 'max', 'step']) if (f[a] !== undefined) input[a] = f[a];
+        if (f.type === 'checkbox') input.checked = settings[f.key]; else input.value = settings[f.key];
+      }
+      input.id = id; input.dataset.key = f.key;
+      const label = document.createElement('label'); label.htmlFor = id; label.textContent = f.label;
+      row.append(label, input);
+      if (f.hint) { const h = document.createElement('div'); h.className = 'hint'; h.textContent = f.hint; row.appendChild(h); }
+      form.appendChild(row);
+    }
+  }
+
+  function applySettings(next) {
+    settings = next;
+    S.saveSettings(settings);
+    live.setConfig(settings);
+    if (view.replay) view.replay.fleet.setConfig(settings);
+    $('window').value = settings.graphWindowMin;
+    armAutosave();
+    render(true);
+  }
+
+  $('settings-form').addEventListener('change', (e) => {
+    const k = e.target.dataset.key;
+    if (!k) return;
+    const def = S.defaults()[k];
+    let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    if (typeof def === 'number') { v = Number(v); if (!Number.isFinite(v)) { e.target.value = settings[k]; return; } }
+    applySettings(Object.assign({}, settings, { [k]: v }));
+  });
+  $('settings-reset').addEventListener('click', () => { applySettings(S.defaults()); buildSettingsForm(); toast('Settings reset to defaults'); });
+  $('btn-settings').addEventListener('click', () => { buildSettingsForm(); $('settings').hidden = !$('settings').hidden; });
+  $('settings-close').addEventListener('click', () => { $('settings').hidden = true; });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('settings').hidden = true; });
+
+  for (const [v, label] of [0, 1, 5, 15, 30, 60].map(MIN)) $('window').add(new Option(label, v));
+  $('window').value = settings.graphWindowMin;
+  buildSettingsForm();   // also corrects values an older version saved
+  $('window').addEventListener('change', (e) => { applySettings(Object.assign({}, settings, { graphWindowMin: +e.target.value })); buildSettingsForm(); });
 
   // ---------- theme ----------
   try { const th = localStorage.getItem('dg-theme'); if (th) document.documentElement.dataset.theme = th; } catch (e) { /* storage blocked */ }
@@ -216,6 +338,7 @@
   }
 
   const STATE_GLYPH = { OK: '●', STALE: '◐', LOST: '○' };
+  const stateHtml = (st) => '<span class="state ' + st + '">' + STATE_GLYPH[st] + ' ' + st + '</span>';
 
   function renderSummary(f, t) {
     const s = f.summary(t);
@@ -236,18 +359,17 @@
     $('fleet').querySelector('tbody').innerHTML = rows.map(({ unit: u, state, age: a }) => {
       const d = u.latest;
       const batt = d.valid.soc ? fmt(d.values.battery, 1) + '%' : '—';
-      const battCls = d.valid.soc && d.values.battery < F.LOW_BATTERY_PCT ? ' warn-v' : '';
-      const rssiCls = u.bestRssi < F.WEAK_RSSI_DBM ? ' warn-v' : '';
-      const rxp = f.rxPercent(u);
-      const fresh = t - u.lastT < 700 ? ' flash' : '';
+      const battCls = d.valid.soc && d.values.battery < settings.lowBatteryPct ? ' warn-v' : '';
+      const rssiCls = u.bestRssi < settings.weakRssiDbm ? ' warn-v' : '';
+      const fresh = t - u.lastT < 300 ? ' flash' : '';
       return '<tr data-csid="' + u.csid + '" class="' + (u.csid === view.sel ? 'sel' : '') + fresh + '">' +
         '<td class="csid">' + u.csid + '</td>' +
-        '<td><span class="state ' + state + '">' + STATE_GLYPH[state] + ' ' + state + '</span>' + (d.saturated ? ' <span class="warn-v" title="Acceleration near the ±8 g sensor limit">▲sat</span>' : '') + '</td>' +
+        '<td>' + stateHtml(state) + (d.saturated ? ' <span class="warn-v" title="Acceleration near the sensor limit">▲sat</span>' : '') + '</td>' +
         '<td class="r">' + age(a) + '</td>' +
         '<td class="r">' + u.lastCounter + '</td>' +
         '<td class="r">' + u.packets + '</td>' +
         '<td class="r">' + u.missed + '</td>' +
-        '<td class="r">' + fmt(rxp, 1) + '</td>' +
+        '<td class="r">' + fmt(f.rxPercent(u), 1) + '</td>' +
         '<td class="r' + (u.resets ? ' warn-v' : '') + '">' + u.resets + '</td>' +
         '<td class="r' + battCls + '">' + batt + '</td>' +
         '<td>' + bits(d.values.validity) + '</td>' +
@@ -264,43 +386,63 @@
     if (view.sel !== null) sel.value = view.sel;
   }
 
-  const GROUP_TITLES = { gps: 'GPS', env: 'Environment', accel: 'Linear acceleration', gyro: 'Gyroscope', mag: 'Magnetometer', quat: 'Quaternion' };
+  // One value cell: live when its validity bit is set, otherwise the last
+  // trusted value in muted ink (or — if there never was one).
+  function cell(u, key, dec) {
+    const fd = P.FIELDS.find((x) => x.key === key);
+    const d = u.latest;
+    if (d.valid[fd.group]) {
+      const sat = fd.group === 'accel' && Math.abs(d.values[key]) >= settings.saturationMps2;
+      return '<td class="v' + (sat ? ' warn-v' : '') + '"' + (sat ? ' title="Near the accelerometer limit"' : '') + '>' + (sat ? '▲' : '') + fmt(d.values[key], dec) + '</td>';
+    }
+    const lv = u.lastValid[key];
+    return '<td class="v stale" title="Not valid in this packet' + (lv !== undefined ? '; last trusted value shown' : '') + '">' + (lv !== undefined ? fmt(lv, dec) : '—') + '</td>';
+  }
+
+  function sectTitle(u, name, group) {
+    return '<h3>' + name + (u.latest.valid[group] ? '' : ' <span class="bad-v">not valid</span>') + '</h3>';
+  }
 
   function renderLatest(f, t) {
     if (view.paused) return;
     const u = view.sel === null ? null : f.units.get(view.sel);
-    const tbl = $('latest');
-    if (!u) { tbl.innerHTML = '<tr><td class="k">No unit selected</td></tr>'; return; }
+    const el = $('latest');
+    if (!u) { el.innerHTML = '<div class="none">No unit selected</div>'; return; }
     const d = u.latest;
-    const row = (k, v, unit, cls) => '<tr><td class="k">' + k + '</td><td class="v ' + (cls || '') + '">' + v + '</td><td class="u">' + (unit || '') + '</td></tr>';
-    const crc = d.crcOk
-      ? '<span style="color:var(--good)">✓ pass</span>' + (u.latestSource === 'csv' ? ' <span class="stale-note" title="The old CSV receiver prints values, not bytes; the packet was rebuilt from them to check the CRC">(CSV)</span>' : '')
-      : '<span class="bad-v">✗ fail</span>';
-    let html = '<colgroup><col style="width:42%"><col><col style="width:58px"></colgroup>' +
-      '<tr class="grp"><td colspan="3">Packet</td></tr>' +
-      row('CSID', u.csid) +
-      row('State', '<span class="state ' + f.state(u, t) + '">' + STATE_GLYPH[f.state(u, t)] + ' ' + f.state(u, t) + '</span>') +
-      row('Age', age(t - u.lastT)) +
-      row('Counter', d.values.counter) +
-      row('Battery', d.valid.soc ? fmt(d.values.battery, 1) : '—', '%') +
-      row('Validity', bits(d.values.validity), '0x' + d.values.validity.toString(16).toUpperCase().padStart(2, '0')) +
-      row('CRC-16', crc, d.crcReceived.toString(16).toUpperCase().padStart(4, '0')) +
-      row('Packet every', Number.isFinite(u.intervalMs) ? fmt(u.intervalMs / 1000, 2) : '—', 's') +
-      row('Received by', u.receptions.map((r) => esc(rxName(r.rx)) + ' ' + fmt(r.rssi, 1) + '/' + fmt(r.snr, 1)).join('<br>') || '—', 'dBm/dB');
-    let group = null;
-    for (const fd of P.FIELDS) {
-      if (!fd.group || fd.group === 'soc') continue;
-      if (fd.group !== group) { group = fd.group; html += '<tr class="grp"><td colspan="3">' + GROUP_TITLES[group] + (d.valid[group] ? '' : ' <span class="bad-v">— not valid</span>') + '</td></tr>'; }
-      const dec = Math.min(fd.csvDecimals, fd.scale >= 1e7 ? 7 : 5);
-      if (d.valid[group]) {
-        const sat = group === 'accel' && Math.abs(d.values[fd.key]) >= P.ACCEL_SATURATION_MPS2;
-        html += row(fd.label, fmt(d.values[fd.key], dec) + (sat ? ' <span class="warn-v" title="Near the ±8 g sensor limit">▲sat</span>' : ''), fd.unit);
-      } else {
-        const lv = u.lastValid[fd.key];
-        html += row(fd.label, '—' + (lv !== undefined ? '<span class="stale-note">last ' + fmt(lv, dec) + '</span>' : ''), fd.unit, 'stale');
-      }
-    }
-    tbl.innerHTML = html;
+    const stat = (k, v, title) => '<div class="stat"' + (title ? ' title="' + esc(title) + '"' : '') + '><div class="k">' + k + '</div><div class="v">' + v + '</div></div>';
+    const crc = d.crcOk ? '<span style="color:var(--good)">✓</span> ' + d.crcReceived.toString(16).toUpperCase().padStart(4, '0') : '<span class="bad-v">✗ fail</span>';
+    const kv = (label, key, dec, unit) => '<tr><td class="k">' + label + '</td>' + cell(u, key, dec) + '<td class="u">' + unit + '</td></tr>';
+    // Vector rows have 4 value columns; 3-axis sensors leave "real" empty.
+    const vec = (label, keys, dec, unit) => '<tr><td class="k">' + label + '</td>' + keys.map((k) => cell(u, k, dec)).join('') +
+      (keys.length === 3 ? '<td></td>' : '') + '<td class="u">' + unit + '</td></tr>';
+    const imuBad = ['accel', 'gyro', 'mag', 'quat'].filter((g) => !d.valid[g]);
+
+    el.innerHTML =
+      '<div class="lp-head"><span class="id">CSID ' + u.csid + '</span>' + stateHtml(f.state(u, t)) +
+        (d.saturated ? '<span class="warn-v">▲ accel saturated</span>' : '') +
+        '<span class="age">' + age(t - u.lastT) + ' ago</span></div>' +
+      '<div class="stats">' +
+        stat('Counter', d.values.counter) +
+        stat('Battery', d.valid.soc ? fmt(d.values.battery, 1) + '%' : '—') +
+        stat('Every', Number.isFinite(u.intervalMs) ? fmt(u.intervalMs / 1000, 2) + 's' : '—') +
+        stat('CRC', crc, u.latestSource === 'csv' ? 'Old CSV receiver: packet rebuilt from the printed values to check the CRC' : '') +
+        stat('Packets', u.packets) + stat('Missed', u.missed) + stat('Resets', u.resets) + stat('Rx %', fmt(f.rxPercent(u), 1)) +
+      '</div>' +
+      '<div>' + bits(d.values.validity, true) + ' <span class="stale-note">0x' + d.values.validity.toString(16).toUpperCase().padStart(2, '0') + '</span></div>' +
+      '<div class="rxlist">' + (u.receptions.map((r) => '<span>' + esc(rxName(r.rx)) + ' ' + fmt(r.rssi, 1) + ' dBm / ' + fmt(r.snr, 1) + ' dB</span>').join('') || '—') + '</div>' +
+      '<div class="two">' +
+        '<div class="sect">' + sectTitle(u, 'GPS', 'gps') + '<table class="vals">' +
+          kv('Latitude', 'lat', 6, '°') + kv('Longitude', 'lon', 6, '°') + kv('Altitude', 'gpsAlt', 1, 'm') + '</table></div>' +
+        '<div class="sect">' + sectTitle(u, 'Environment', 'env') + '<table class="vals">' +
+          kv('Temp', 'temp', 2, '°C') + kv('Pressure', 'pressure', 1, 'hPa') + kv('Humidity', 'humidity', 1, '%') + kv('Altitude', 'envAlt', 1, 'm') + '</table></div>' +
+      '</div>' +
+      '<div class="sect"><h3>IMU' + (imuBad.length ? ' <span class="bad-v">not valid: ' + imuBad.join(', ') + '</span>' : '') + '</h3><table class="vals">' +
+        '<tr><th></th><th>X / i</th><th>Y / j</th><th>Z / k</th><th>real</th><th></th></tr>' +
+        vec('Accel', ['ax', 'ay', 'az'], 2, 'm/s²') +
+        vec('Gyro', ['gx', 'gy', 'gz'], 1, 'deg/s') +
+        vec('Mag', ['mx', 'my', 'mz'], 1, 'µT') +
+        vec('Quat', ['qi', 'qj', 'qk', 'qr'], 4, '') +
+      '</table></div>';
   }
 
   function renderReceivers() {
@@ -342,17 +484,15 @@
     renderFleet(f, t);
     renderLatest(f, t);
     renderReceivers();
-    if (force || t - lastChart > 500 || view.replay) {
-      lastChart = t;
+    if (force || Date.now() - lastChart > 500) {
+      lastChart = Date.now();
       const u = view.sel === null ? null : f.units.get(view.sel);
       $('graph-title').textContent = u ? 'CSID ' + u.csid + ' history' : 'History';
-      // Window ends at the unit's last packet, so a silent unit still shows
-      // its final minutes instead of an empty chart.
-      charts.update(u, u ? Math.min(t, u.lastT + 2000) : t, view.windowS);
+      charts.update(u, { windowMin: settings.graphWindowMin, lineWidth: settings.lineWidth, saturationMps2: settings.saturationMps2 });
     }
   }
 
-  setInterval(() => { if (!view.replay || !view.replay.playing) render(flashNew); flashNew = false; }, 250);
+  setInterval(() => { if (!view.replay || !view.replay.playing) render(); }, 250);
   render(true);
 
   // Offline copy for the hosted site. file:// pages don't need it.
@@ -361,5 +501,5 @@
   }
 
   // Handle for manual checks in the console.
-  window.DGApp = { live, view, hub, recorder, startReplay, seek };
+  window.DGApp = { live, view, hub, recorder, autosave, startReplay, seek, settings: () => settings };
 })();

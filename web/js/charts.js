@@ -1,10 +1,18 @@
 // History charts (uPlot). One set of panels per tab; each panel has its own
-// y axis so no chart ever mixes units.
+// y axis so no chart ever mixes units. The x axis spans exactly the data
+// shown: from the first to the last packet kept (or the chosen window,
+// counted back from the newest packet).
 (function (root) {
   'use strict';
 
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const series = (i) => css('--series-' + (i + 1));
+
+  // Series colour at 70% opacity: noisy data reads calmer.
+  function seriesColor(i) {
+    const hex = css('--series-' + (i + 1)).replace('#', '');
+    const n = parseInt(hex, 16);
+    return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',0.7)';
+  }
 
   // Tab -> panels -> series. `key` reads unit.history[key]; `rx` = per receiver.
   const TABS = [
@@ -15,7 +23,7 @@
       { title: 'SNR, best receiver (dB)', series: [{ key: 'snr', label: 'SNR' }] },
     ] },
     { id: 'imu', label: 'IMU', panels: [
-      { title: 'Linear acceleration (m/s²)', band: 75, series: [{ key: 'ax', label: 'X' }, { key: 'ay', label: 'Y' }, { key: 'az', label: 'Z' }] },
+      { title: 'Linear acceleration (m/s²)', band: 'saturationMps2', series: [{ key: 'ax', label: 'X' }, { key: 'ay', label: 'Y' }, { key: 'az', label: 'Z' }] },
       { title: 'Gyroscope (deg/s)', series: [{ key: 'gx', label: 'X' }, { key: 'gy', label: 'Y' }, { key: 'gz', label: 'Z' }] },
       { title: 'Magnetometer (µT)', series: [{ key: 'mx', label: 'X' }, { key: 'my', label: 'Y' }, { key: 'mz', label: 'Z' }] },
       { title: 'Quaternion', series: [{ key: 'qi', label: 'i' }, { key: 'qj', label: 'j' }, { key: 'qk', label: 'k' }, { key: 'qr', label: 'real' }] },
@@ -37,9 +45,8 @@
     ] },
   ];
 
-  function timeFmt(u, splits) {
-    return splits.map((s) => new Date(s * 1000).toTimeString().slice(0, 8));
-  }
+  const clock = (s) => new Date(s * 1000).toTimeString().slice(0, 8);
+  const HEAD_PX = 58;   // panel title + legend
 
   class Charts {
     constructor(container, tabsEl, rxLabel) {
@@ -63,20 +70,29 @@
       for (const b of this.tabsEl.children) b.classList.toggle('on', b.dataset.tab === this.tab);
     }
 
+    // Fit all panels of the tab into the pane: columns from the width,
+    // height shared between the rows.
+    plotSize(box) {
+      const n = Math.max(1, this.el.children.length);
+      const cols = Math.max(1, getComputedStyle(this.el).gridTemplateColumns.split(' ').length);
+      const rows = Math.ceil(n / cols);
+      const h = Math.floor((this.el.clientHeight - 16 - 8 * (rows - 1)) / rows) - HEAD_PX;
+      return { width: Math.max(200, box.clientWidth - 12), height: Math.max(90, h) };
+    }
+
     resize() {
       for (const p of this.plots) {
-        const w = p.box.clientWidth - 12;
-        if (w > 50 && Math.abs(w - p.u.width) > 2) p.u.setSize({ width: w, height: 170 });
+        const size = this.plotSize(p.box);
+        if (Math.abs(size.width - p.u.width) > 2 || Math.abs(size.height - p.u.height) > 2) p.u.setSize(size);
       }
     }
 
-    // Build the column arrays for one panel.
+    // Column arrays for one panel, from t0 (seconds) onwards.
     panelData(panel, unit, t0) {
       if (!unit) return null;
       if (panel.rx) {
         const keys = Object.keys(unit.rxHistory);
         if (!keys.length) return null;
-        // Align all receivers on one time axis; gaps are null.
         const times = [...new Set(keys.flatMap((k) => unit.rxHistory[k].t))].filter((t) => t >= t0).sort((a, b) => a - b);
         const idx = new Map(times.map((t, i) => [t, i]));
         const cols = keys.map((k) => {
@@ -102,72 +118,75 @@
         data[0].push(h.t[i]);
         panel.series.forEach((s, j) => data[j + 1].push(h[s.key][i]));
       }
-      return { data, labels: panel.series.map((s) => ({ label: s.label, index: panel.series.indexOf(s) })) };
+      return { data, labels: panel.series.map((s, j) => ({ label: s.label, index: j })) };
     }
 
-    build(panels) {
+    build(panels, opt) {
       this.el.innerHTML = '';
       this.plots = [];
-      for (const { panel, pd } of panels) {
+      const boxes = panels.map(({ panel }) => {
         const box = document.createElement('div');
         box.className = 'chart';
         const h = document.createElement('h3'); h.textContent = panel.title; box.appendChild(h);
         this.el.appendChild(box);
+        return box;
+      });
+      panels.forEach(({ panel, pd }, i) => {
+        const box = boxes[i];
         if (!pd || pd.data[0].length === 0) {
           const n = document.createElement('div'); n.className = 'none';
-          n.textContent = panel.rx ? 'No receiver data yet' : 'No valid data in this window';
+          n.textContent = panel.rx ? 'No receiver data yet' : 'No valid data yet';
+          n.style.height = this.plotSize(box).height + 'px';
           box.appendChild(n);
-          continue;
+          return;
         }
         const grid = { stroke: css('--line'), width: 1 };
         const axis = { stroke: css('--text-2'), grid, ticks: { stroke: css('--line') }, font: '11px ' + css('--sans') };
-        const opts = {
-          width: Math.max(200, box.clientWidth - 12), height: 170,
+        const few = pd.data[0].length < 40;
+        const opts = Object.assign(this.plotSize(box), {
           legend: { live: true },
-          cursor: { points: { size: 8 }, drag: { x: false, y: false } },
+          cursor: { points: { size: 7 }, drag: { x: false, y: false } },
           scales: { x: { time: true } },
-          axes: [Object.assign({ values: timeFmt }, axis), Object.assign({ size: 56 }, axis)],
-          series: [{ value: (u, v) => (v == null ? '—' : new Date(v * 1000).toTimeString().slice(0, 8)) }].concat(pd.labels.map((l) => ({
-            label: l.label, stroke: series(l.index), width: 2, spanGaps: false,
-            points: { show: pd.data[0].length < 60, size: 5 },
+          axes: [Object.assign({ values: (u, splits) => splits.map(clock) }, axis), Object.assign({ size: 56 }, axis)],
+          series: [{ value: (u, v) => (v == null ? '—' : clock(v)) }].concat(pd.labels.map((l) => ({
+            label: l.label, stroke: seriesColor(l.index), width: opt.lineWidth, spanGaps: false,
+            points: { show: few, size: 4, width: 1 },
             value: (u, v) => (v == null ? '—' : +v.toFixed(5)),
           }))),
-        };
-        if (panel.band) {
+        });
+        const lim = panel.band && opt[panel.band];
+        if (lim) {
           opts.hooks = { draw: [(u) => {
-            // Shade beyond ±75 m/s²: the accelerometer is probably clipping there.
-            const ctx = u.ctx; const { left, width } = u.bbox;
-            ctx.save(); ctx.fillStyle = 'rgba(250,178,25,0.12)';
-            for (const lim of [panel.band, -panel.band]) {
-              const y = u.valToPos(lim, 'y', true);
-              const edge = lim > 0 ? u.bbox.top : u.bbox.top + u.bbox.height;
-              if (y > u.bbox.top && y < u.bbox.top + u.bbox.height) ctx.fillRect(left, Math.min(y, edge), width, Math.abs(edge - y));
+            // Shade beyond the saturation limit: the accelerometer is probably clipping there.
+            const ctx = u.ctx; const { left, top, width, height } = u.bbox;
+            ctx.save(); ctx.fillStyle = 'rgba(250,178,25,0.10)';
+            for (const v of [lim, -lim]) {
+              const y = u.valToPos(v, 'y', true);
+              const edge = v > 0 ? top : top + height;
+              if (y > top && y < top + height) ctx.fillRect(left, Math.min(y, edge), width, Math.abs(edge - y));
             }
             ctx.restore();
           }] };
         }
-        const u = new uPlot(opts, pd.data, box);
-        this.plots.push({ u, box, panel });
-      }
+        this.plots.push({ u: new uPlot(opts, pd.data, box), box, panel });
+      });
     }
 
     // Redraw for the selected unit. Rebuilds DOM only when the shape changes.
-    update(unit, now, windowS) {
-      this.last = [unit, now, windowS];
+    // opt: {windowMin, lineWidth, saturationMps2}
+    update(unit, opt) {
+      this.last = [unit, opt];
       const tab = TABS.find((t) => t.id === this.tab);
-      const t0 = windowS ? now / 1000 - windowS : -Infinity;
+      const newest = unit && unit.history.t.length ? unit.history.t[unit.history.t.length - 1] : 0;
+      const t0 = opt.windowMin ? newest - opt.windowMin * 60 : -Infinity;
       const panels = tab.panels.map((panel) => ({ panel, pd: this.panelData(panel, unit, t0) }));
-      const sig = this.tab + '|' + (unit ? unit.csid : '-') + '|' + panels.map((p) => (p.pd && p.pd.data[0].length ? p.pd.labels.map((l) => l.label).join(',') : 'x')).join(';');
-      if (sig !== this.sig) { this.sig = sig; this.build(panels); return; }
+      const sig = [this.tab, unit ? unit.csid : '-', opt.lineWidth, opt.saturationMps2]
+        .concat(panels.map((p) => (p.pd && p.pd.data[0].length ? p.pd.labels.map((l) => l.label).join(',') + (p.pd.data[0].length < 40 ? 'f' : '') : 'x'))).join('|');
+      if (sig !== this.sig) { this.sig = sig; this.build(panels, opt); return; }
       let i = 0;
       for (const { pd } of panels) {
         if (!pd || !pd.data[0].length) continue;
-        const p = this.plots[i++];
-        p.u.batch(() => {
-          p.u.setData(pd.data);
-          const xmax = now / 1000;
-          p.u.setScale('x', { min: windowS ? xmax - windowS : pd.data[0][0], max: Math.max(xmax, pd.data[0][pd.data[0].length - 1]) });
-        });
+        this.plots[i++].u.setData(pd.data);   // x and y rescale to the data
       }
     }
 

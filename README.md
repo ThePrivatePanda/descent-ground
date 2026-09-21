@@ -14,6 +14,8 @@ Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-B
 2. **Record to file** streams every received line to a file (saved to disk every 5 s).
 3. **Save session** downloads everything received since the page opened.
 4. **Open log** replays a saved file, or an old lab log from the CSV receiver.
+5. **Autosave:** everything received is also kept in the browser every 5 s. After a crash, the next visit offers to open, download or discard it.
+6. **Settings:** graph time span, when old graph data is dropped, status thresholds, saving. Remembered per browser.
 
 ## Screen
 
@@ -21,7 +23,7 @@ Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-B
 |---|---|
 | Left | Every field of the selected unit's latest packet. Fields whose validity bit is clear show `—` and the last trusted value. |
 | Right top | One row per CSID: state, age, counter, packets, missed, Rx %, resets, battery, validity bits, best RSSI/SNR, packet interval, receivers that heard it. |
-| Right bottom | History of the selected unit: Overview, IMU, Environment, GPS, Radio (per receiver). |
+| Right bottom | History of the selected unit: Overview, IMU, Environment, GPS, Radio (per receiver). The time axis spans the data received. |
 
 ## Rules
 
@@ -33,6 +35,7 @@ Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-B
 | Reset | Counter drops, or 0 twice in a row. |
 | Stale | No packet for 3× the unit's own measured interval (min 5 s). |
 | Lost | No packet for 10 min. |
+| Thresholds | All rules below are defaults; change them in Settings. |
 | Several receivers | Identical bytes within 1.5 s = one packet. RSSI/SNR kept per receiver; the fleet list shows the best. |
 | Saturation | ▲sat when valid acceleration reaches ±75 m/s² (BNO085 limit is ±8 g). |
 | Low battery | Below 20 %. |
@@ -52,6 +55,7 @@ Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-B
 | `web/js/fleet.js` | Per-unit state: missed, resets, interval, stale/lost, history, dedupe. |
 | `web/js/serial.js` | Web Serial ports. |
 | `web/js/recorder.js` | Recording, log files, replay parsing. |
+| `web/js/store.js` | Settings and crash autosave (browser storage). |
 | `web/js/charts.js` | History charts (uPlot). |
 | `web/js/app.js` | Wires it together and draws the screen. |
 | `web/sw.js` | Offline copy for the hosted site. |

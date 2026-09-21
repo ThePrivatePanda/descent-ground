@@ -1,9 +1,9 @@
 // Offline copy of the hosted dashboard. Network first so updates arrive as
 // soon as there is a connection; the cache is used only when offline.
-const CACHE = 'descent-ground-v1';
+const CACHE = 'descent-ground-v2';
 const FILES = [
   './', 'index.html', 'css/style.css',
-  'js/packet.js', 'js/lines.js', 'js/fleet.js', 'js/serial.js', 'js/recorder.js', 'js/charts.js', 'js/app.js',
+  'js/packet.js', 'js/lines.js', 'js/fleet.js', 'js/store.js', 'js/serial.js', 'js/recorder.js', 'js/charts.js', 'js/app.js',
   'vendor/uPlot.iife.min.js', 'vendor/uPlot.min.css',
 ];
 

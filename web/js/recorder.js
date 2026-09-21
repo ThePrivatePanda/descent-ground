@@ -69,9 +69,9 @@
       if (this.writable) this.pending += s;
     }
     canStream() { return typeof showSaveFilePicker === 'function'; }
-    async start() {
+    async start(tag) {
       this.handle = await showSaveFilePicker({
-        suggestedName: 'descent-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.log',
+        suggestedName: (tag || 'descent') + '-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.log',
         types: [{ description: 'DeSCENT log', accept: { 'text/plain': ['.log'] } }],
       });
       this.fileName = this.handle.name;

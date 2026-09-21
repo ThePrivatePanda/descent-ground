@@ -105,3 +105,20 @@ test('bad CRC never creates or updates a unit', () => {
   assert.strictEqual(fleet.units.size, 0);
   assert.strictEqual(fleet.badCrc, 1);
 });
+
+test('history retention: drop points older than N minutes, and a point cap', () => {
+  const fleet = new Fleet({ retainMin: 1 });
+  for (let i = 0; i < 180; i++) fleet.ingest(L.parseLine(packetLine(i, 4, -80)), i * 1000, 'A');
+  const h = fleet.units.get(4).history;
+  assert.ok(h.t[0] >= 179 - 60, 'oldest point within 1 min of newest');
+  for (const col of Object.values(h)) assert.strictEqual(col.length, h.t.length);
+  fleet.setConfig({ retainMin: 0, maxPoints: 10 });
+  assert.strictEqual(h.t.length, 10);
+  assert.strictEqual(fleet.units.get(4).packets, 180, 'counts are never dropped');
+});
+
+test('thresholds come from settings', () => {
+  const fleet = new Fleet({ lostMin: 1 });
+  fleet.ingest(L.parseLine(packetLine(1, 6, -80)), 0, 'A');
+  assert.strictEqual(fleet.state(fleet.units.get(6), 61000), 'LOST');
+});
