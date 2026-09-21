@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeSCENT Ground</title>
+<meta name="description" content="Fleet dashboard for DeSCENT ChipSats over T-Beam LoRa receivers">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='%232a78d6' stroke-width='2'/%3E%3Ccircle cx='8' cy='8' r='2' fill='%232a78d6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/uPlot.min.css">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="bar">
+  <span class="brand">DeSCENT Ground</span>
+  <button id="btn-connect" class="primary" title="Pick a T-Beam serial port">Connect receiver</button>
+  <div id="receivers" class="receivers"></div>
+  <span class="spacer"></span>
+  <span id="mode" class="mode"></span>
+  <button id="btn-record" title="Stream every received line to a file on this computer">Record to file</button>
+  <button id="btn-save" title="Download everything received this session">Save session</button>
+  <label class="button" title="Open saved logs, including old lab CSV logs">Open log<input id="file-open" type="file" multiple accept=".txt,.log,.csv,.tsv" hidden></label>
+  <button id="btn-theme" title="Switch light / dark">◑</button>
+</header>
+
+<div id="replay" class="replaybar" hidden>
+  <button id="rp-play">Play</button>
+  <select id="rp-speed" title="Replay speed">
+    <option value="1">1×</option><option value="10">10×</option><option value="60" selected>60×</option><option value="600">600×</option>
+  </select>
+  <input id="rp-pos" type="range" min="0" max="0" value="0">
+  <span id="rp-time" class="num"></span>
+  <button id="rp-exit">Close log</button>
+</div>
+
+<div id="unsupported" class="banner" hidden>
+  This browser cannot open serial ports. Use Chrome or Edge (desktop) to connect a T-Beam. Opening saved logs still works here.
+</div>
+
+<main class="layout">
+  <section class="pane left">
+    <div class="pane-head">
+      <h2>Latest packet</h2>
+      <select id="sel-unit" title="Unit shown"></select>
+      <button id="btn-pause" title="Freeze this table">Pause</button>
+    </div>
+    <div class="scroll"><table id="latest" class="kv"></table></div>
+  </section>
+
+  <section class="right">
+    <div class="pane fleet">
+      <div class="pane-head">
+        <h2>Fleet</h2>
+        <div id="summary" class="summary"></div>
+        <span class="spacer"></span>
+        <select id="sort" title="Row order">
+          <option value="attention">Sort: attention</option>
+          <option value="csid">Sort: CSID</option>
+        </select>
+        <button id="btn-only" title="Show only the selected unit">Only this</button>
+        <button id="btn-hide" title="Hide the selected unit">Hide</button>
+        <button id="btn-restore" title="Show hidden units">Restore</button>
+        <button id="btn-reset" title="Forget all units and counts">Reset fleet</button>
+      </div>
+      <div class="scroll">
+        <table id="fleet" class="grid">
+          <thead><tr>
+            <th>CSID</th><th>State</th><th class="r">Age</th><th class="r">Counter</th><th class="r">Pkts</th>
+            <th class="r">Miss</th><th class="r">Rx %</th><th class="r">Resets</th><th class="r">Batt</th>
+            <th>Validity</th><th class="r">RSSI</th><th class="r">SNR</th><th class="r">Every</th><th>Rx</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <p id="fleet-empty" class="empty">No packets yet. Connect a T-Beam receiver or open a log.</p>
+      </div>
+    </div>
+
+    <div class="pane graphs">
+      <div class="pane-head">
+        <h2 id="graph-title">History</h2>
+        <nav id="tabs" class="tabs"></nav>
+        <span class="spacer"></span>
+        <select id="window" title="Time shown">
+          <option value="60">Last 1 min</option><option value="300" selected>Last 5 min</option>
+          <option value="1800">Last 30 min</option><option value="0">All</option>
+        </select>
+      </div>
+      <div id="charts" class="charts scroll"></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="vendor/uPlot.iife.min.js"></script>
+<script src="js/packet.js"></script>
+<script src="js/lines.js"></script>
+<script src="js/fleet.js"></script>
+<script src="js/serial.js"></script>
+<script src="js/recorder.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

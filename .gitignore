@@ -1,0 +1,5 @@
+# Recorded flight/bench logs stay local (the repo is public).
+*.log
+logs/
+.playwright-mcp/
+node_modules/
