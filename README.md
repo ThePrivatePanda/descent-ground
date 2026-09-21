@@ -2,7 +2,7 @@
 
 Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-Beam LoRa receivers over USB.
 
-**Open it:** https://privatepanda.co/descent-ground/
+**Open it:** https://ground.privatepanda.co (the old link privatepanda.co/descent-ground/ redirects)
 
 - Chrome or Edge (desktop): Windows, macOS, Linux, ChromeOS.
 - Firefox and Safari can open saved logs but cannot connect to a receiver (no Web Serial).
