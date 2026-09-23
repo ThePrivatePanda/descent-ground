@@ -674,6 +674,17 @@
         (hub.native && r && r.info.sf ? sfSelect(k, r.info.sf) : '') +
         (port && port.status === 'open' ? '<button data-close="' + k + '" title="Disconnect" aria-label="Disconnect ' + esc(k) + '">✕</button>' : '') + '</span>';
     }).join('');
+    // Lines that did not come off a radio. Said plainly, because an absent RSSI is an
+    // absence and not a fault, and a screenshot of a replay should not read as live.
+    for (const [rx, src] of fleet().sources) {
+      const what = src.kind === 'flash' ? 'Flash dump' : (src.kind || 'Not a radio');
+      const bits = [src.from, src.boot ? 'boot ' + src.boot : '', src.packets ? src.packets + ' records' : '']
+        .filter(Boolean).join(', ');
+      $('receivers').insertAdjacentHTML('beforeend', '<span class="rx" title="' +
+        esc('No RSSI or SNR: these lines came off a chip, not a radio.' + (src.anchor_utc ? '\nTime anchored at ' + src.anchor_utc : '')) +
+        '"><span class="name">' + esc(rx) + '</span><span class="st warning">' + esc(what) + '</span>' +
+        (bits ? '<span class="meta">' + esc(bits) + '</span>' : '') + '</span>');
+    }
     offerSetupOnce();
     // Two spreading factors is the normal setup for a test: the LE boards are on SF9, the HP
     // boards on SF12, and one receiver hears only one of them.

@@ -55,15 +55,23 @@
     return packetEvent('csv', bytes, num(parts[33]), num(parts[34]), NaN);
   }
 
+  function keyValues(parts) {
+    const info = {};
+    for (const p of parts) {
+      const eq = p.indexOf('=');
+      if (eq > 0) info[p.slice(0, eq)] = p.slice(eq + 1);
+    }
+    return info;
+  }
+
   function parseDevice(parts) {
     // #DG,RX,v1,id=XXXX,f=915.0,...   or  #DG,FATAL,<code>
+    // #DG,SRC,v1,kind=flash,...       where the lines did not come off a radio
     if (parts[1] === 'RX') {
-      const info = {};
-      for (const p of parts.slice(3)) {
-        const eq = p.indexOf('=');
-        if (eq > 0) info[p.slice(0, eq)] = p.slice(eq + 1);
-      }
-      return { kind: 'rxinfo', version: parts[2], info };
+      return { kind: 'rxinfo', version: parts[2], info: keyValues(parts.slice(3)) };
+    }
+    if (parts[1] === 'SRC') {
+      return { kind: 'source', version: parts[2], info: keyValues(parts.slice(3)) };
     }
     if (parts[1] === 'FATAL') return { kind: 'rxfatal', code: num(parts[2]) };
     return { kind: 'other' };

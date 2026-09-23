@@ -69,6 +69,7 @@
     clear() {
       this.units = new Map();
       this.receivers = new Map();
+      this.sources = new Map();   // rx -> where its lines came from, if not a radio
       this.recent = new Map();   // hex -> {t, csid}
       this.badCrc = 0;
       this.badLength = 0;
@@ -94,6 +95,9 @@
       if (r.firstT === null) r.firstT = t;
       switch (ev.kind) {
         case 'rxinfo': r.info = ev.info; r.id = ev.info.id || r.id; r.lastT = t; return 'rxinfo';
+        // Not a radio. A flash dump has no RSSI or SNR by nature, and a replay of one
+        // must not be mistaken for live reception in a screenshot.
+        case 'source': r.source = ev.info; this.sources.set(rx, ev.info); return 'source';
         case 'heartbeat': r.lastHbT = t; r.lastT = t; r.reportedOk = ev.ok; r.reportedErrors = ev.errors; return 'heartbeat';
         case 'rxerror': r.radioErrors++; r.lastT = t; return 'rxerror';
         case 'badlength': r.lastT = t; this.badLength++; return 'badlength';

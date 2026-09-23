@@ -30,6 +30,20 @@ For just the dashboard page, with no executable:
 - Firefox and Safari can open saved logs but cannot connect to a receiver (no Web Serial).
 - A hosted copy is at https://ground.privatepanda.co.
 
+## Replaying a flash dump
+
+**Open log** also takes a log written from a ChipSat's flash, exported by
+`V2_6_X/tools/flash_to_ground.py` on the flight-software side. Such a file names itself on its
+second line:
+
+```
+#DG,SRC,v1,kind=flash,from=CS64_2026-09-24.bin,boot=7,packets=120,anchor_uptime_ms=41230,anchor_utc=2026-09-24T11:02:03.500Z,anchor_tacc_ns=35000000
+```
+
+The dashboard shows that source in the receiver strip so a replayed dump cannot be mistaken for
+live reception. Records off a chip carry no RSSI or SNR, so those columns stay blank and the weak
+RF warning never fires: an absence, not a fault.
+
 ## Recording
 
 | Control | Does |

@@ -77,3 +77,17 @@ test('unrelated lines are other, never packets', () => {
   }
   assert.strictEqual(P.FIELDS.length, 24);
 });
+
+test('a flash dump says where it came from, and is not a radio', () => {
+  const ev = L.parseLine('#DG,SRC,v1,kind=flash,from=CS64_2026-09-24.bin,boot=7,packets=120,anchor_uptime_ms=41230,anchor_utc=2026-09-24T11:02:03.500Z,anchor_tacc_ns=35000000');
+  assert.equal(ev.kind, 'source');
+  assert.equal(ev.version, 'v1');
+  assert.equal(ev.info.kind, 'flash');
+  assert.equal(ev.info.from, 'CS64_2026-09-24.bin');
+  assert.equal(ev.info.boot, '7');
+  assert.equal(ev.info.anchor_utc, '2026-09-24T11:02:03.500Z');
+});
+
+test('an unknown #DG line is still ignored, not thrown', () => {
+  assert.equal(L.parseLine('#DG,WHATEVER,v9,x=1').kind, 'other');
+});
