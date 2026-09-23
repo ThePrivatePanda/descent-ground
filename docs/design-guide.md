@@ -18,6 +18,7 @@
 
 - Status is never colour alone: a word ("Lost"), a letter (L G M Q P S E F) or a shape (hollow dot = lost).
 - An invalid field shows its last trusted value in `--ink-3`, or `—`.
+- The spreading-factor select on a receiver chip is a control, not a status: `--ink` and no state colour.
 
 ## Type
 

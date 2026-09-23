@@ -53,14 +53,19 @@
   }
 
   // Every line from every connected receiver is recorded, whichever unit is on screen.
-  const hub = new DG.SerialHub((rx, text) => {
+  // The native app or Web Serial, depending on where the page was loaded from.
+  const hub = DG.makeHub((rx, text) => {
     const t = Date.now();
     const result = ingestLine(live, rx, text, t);
     recorder.add(t, rx, text, result === 'new' || result === 'duplicate' || result === 'badcrc');
     if (settings.autosave) autosave.add(R.formatLine(t, rx, text));
-  }, () => renderReceivers());
+  }, () => renderReceivers(), (msg) => { toast(msg); serialBanner(); });
 
-  if (!hub.supported) { $('unsupported').hidden = false; $('btn-connect').disabled = true; }
+  function serialBanner() {
+    if (hub.supported) return;
+    $('unsupported').hidden = false; $('btn-connect').disabled = true;
+  }
+  serialBanner();
 
   $('btn-connect').addEventListener('click', async () => {
     try {
@@ -478,7 +483,20 @@
       '</div>';
   }
 
+  // Values 7-12 are what we fly. A board reporting anything else keeps its own number
+  // rather than showing the nearest option, since this select is the board's truth.
+  function sfSelect(k, sf) {
+    const values = [7, 8, 9, 10, 11, 12];
+    if (!values.includes(Number(sf))) values.push(Number(sf));
+    const opts = values.sort((a, b) => a - b)
+      .map((n) => '<option value="' + n + '"' + (n === Number(sf) ? ' selected' : '') + '>SF' + n + '</option>').join('');
+    return '<select data-sf="' + esc(k) + '" aria-label="Spreading factor on ' + esc(k) + '">' + opts + '</select>';
+  }
+
   function renderReceivers() {
+    // The strip redraws every 250 ms, which would shut an open select under the operator.
+    const focus = document.activeElement;
+    if (focus && focus.tagName === 'SELECT' && $('receivers').contains(focus)) return;
     const f = fleet();
     const t = now();
     const keys = new Set([...f.receivers.keys(), ...hub.ports.map((p) => p.key)]);
@@ -496,16 +514,32 @@
         '<span class="sw" style="background:var(--series-' + (m.index + 1) + ')"></span>' +
         '<span class="name">' + esc(rxName(k)) + '</span><span class="st ' + cls + '">' + st + '</span>' +
         (r ? '<span class="meta">' + r.unique + ' packets</span>' : '') +
+        (hub.native && r && r.info.sf ? sfSelect(k, r.info.sf) : '') +
         (port && port.status === 'open' ? '<button data-close="' + k + '" title="Disconnect" aria-label="Disconnect ' + esc(k) + '">✕</button>' : '') + '</span>';
     }).join('');
-    const sfs = new Set([...f.receivers.values()].map((r) => r.info.sf).filter(Boolean));
-    if (sfs.size > 1) $('receivers').insertAdjacentHTML('beforeend', '<span class="rx"><span class="st critical">receivers disagree on SF</span></span>');
+    // Two spreading factors is the normal setup for a test: the LE boards are on SF9, the HP
+    // boards on SF12, and one receiver hears only one of them.
+    const onSf = [...f.receivers.entries()].filter(([, r]) => r.info.sf);
+    if (new Set(onSf.map(([, r]) => r.info.sf)).size > 1) {
+      $('receivers').insertAdjacentHTML('beforeend', '<span class="rx"><span class="meta">' +
+        esc(onSf.map(([k, r]) => rxName(k) + ' on SF' + r.info.sf).join(', ')) + '</span></span>');
+    }
     $('mode').textContent = view.replay ? 'Replaying ' + view.replay.names.join(', ') : (recorder.lines ? recorder.lines + ' lines this session' : '');
   }
   $('receivers').addEventListener('click', (e) => {
     const k = e.target.dataset.close;
     const p = k && hub.ports.find((x) => x.key === k);
     if (p) hub.close(p);
+  });
+  $('receivers').addEventListener('change', (e) => {
+    const k = e.target.dataset.sf;
+    if (!k) return;
+    const sf = Number(e.target.value);
+    // Back to whatever the board last reported; the select settles when its next header arrives.
+    e.target.blur();
+    renderReceivers();
+    hub.setSf(k, sf).then(() => toast('Asked ' + rxName(k) + ' for SF' + sf))
+      .catch((err) => toast('Could not set SF: ' + (err.message || err)));
   });
 
   const charts = new DG.Charts($('charts'), $('tabs'), (k) => ({ label: rxName(k), index: meta(k).index }));
