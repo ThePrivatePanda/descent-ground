@@ -40,6 +40,10 @@ second line:
 #DG,SRC,v1,kind=flash,from=CS64_2026-09-24.bin,boot=7,packets=120,anchor_uptime_ms=41230,anchor_utc=2026-09-24T11:02:03.500Z,anchor_tacc_ns=35000000
 ```
 
+A boot that never got a GPS fix carries `time_source=start` instead of an anchor, meaning its
+times were chosen by a human. The dashboard says so on screen, because once both are epoch
+milliseconds a guessed time axis looks exactly like a real one.
+
 The dashboard shows that source in the receiver strip so a replayed dump cannot be mistaken for
 live reception. Records off a chip carry no RSSI or SNR, so those columns stay blank and the weak
 RF warning never fires: an absence, not a fault.

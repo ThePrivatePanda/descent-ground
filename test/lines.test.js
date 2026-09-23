@@ -91,3 +91,12 @@ test('a flash dump says where it came from, and is not a radio', () => {
 test('an unknown #DG line is still ignored, not thrown', () => {
   assert.equal(L.parseLine('#DG,WHATEVER,v9,x=1').kind, 'other');
 });
+
+test('a boot dated by hand is distinguishable from one dated by GPS', () => {
+  const byHand = L.parseLine('#DG,SRC,v1,kind=flash,from=dump.txt,boot=8,packets=10,time_source=start');
+  assert.equal(byHand.info.time_source, 'start');
+  assert.equal(byHand.info.anchor_utc, undefined);
+  const byGps = L.parseLine('#DG,SRC,v1,kind=flash,boot=7,time_source=anchor,anchor_utc=2026-09-24T14:07:03.216Z,anchor_tacc_ns=25');
+  assert.equal(byGps.info.time_source, 'anchor');
+  assert.equal(byGps.info.anchor_tacc_ns, '25');
+});

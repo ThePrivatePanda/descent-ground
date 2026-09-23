@@ -680,10 +680,17 @@
       const what = src.kind === 'flash' ? 'Flash dump' : (src.kind || 'Not a radio');
       const bits = [src.from, src.boot ? 'boot ' + src.boot : '', src.packets ? src.packets + ' records' : '']
         .filter(Boolean).join(', ');
+      // A boot with no GPS anchor was placed on the clock by hand. Once it is epoch
+      // milliseconds it looks exactly like a real one, so it has to say so.
+      const guessed = src.time_source === 'start';
+      const when = guessed ? '\nTimes were set by hand, not from GPS. The time axis is a guess.'
+        : (src.anchor_utc ? '\nTime anchored at ' + src.anchor_utc +
+            (src.anchor_tacc_ns ? ' (receiver accuracy ' + src.anchor_tacc_ns + ' ns)' : '') : '');
       $('receivers').insertAdjacentHTML('beforeend', '<span class="rx" title="' +
-        esc('No RSSI or SNR: these lines came off a chip, not a radio.' + (src.anchor_utc ? '\nTime anchored at ' + src.anchor_utc : '')) +
+        esc('No RSSI or SNR: these lines came off a chip, not a radio.' + when) +
         '"><span class="name">' + esc(rx) + '</span><span class="st warning">' + esc(what) + '</span>' +
-        (bits ? '<span class="meta">' + esc(bits) + '</span>' : '') + '</span>');
+        (bits ? '<span class="meta">' + esc(bits) + '</span>' : '') +
+        (guessed ? '<span class="st serious">times set by hand</span>' : '') + '</span>');
     }
     offerSetupOnce();
     // Two spreading factors is the normal setup for a test: the LE boards are on SF9, the HP
