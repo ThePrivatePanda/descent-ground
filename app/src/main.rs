@@ -44,7 +44,7 @@ fn main() {
 
     let (tx, rx) = mpsc::channel();
     let hub = Arc::new(Mutex::new(serial::Hub::new(tx)));
-    hub.lock().unwrap().remember_allowed_in(&dir);
+    hub.lock().unwrap().remember_in(&dir);
     let broadcast = ws::Broadcast::new();
 
     let ctx = Arc::new(Ctx {

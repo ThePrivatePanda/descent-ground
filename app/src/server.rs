@@ -1,7 +1,7 @@
 // The dashboard, and the few calls it makes back. Bound to 127.0.0.1 only: this is
 // the operator's own laptop, not a service.
 use crate::json::{esc, int_field};
-use crate::serial::{Hub, OtherPort, PortInfo};
+use crate::serial::{Board, Hub, PortInfo};
 use crate::ws::{Broadcast, Socket};
 use crate::{assets, flash};
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use tungstenite::protocol::Role;
 pub const FIRST_PORT: u16 = 8765;
 pub const LAST_PORT: u16 = 8774;
 
-pub fn ports_json(ports: &[PortInfo], others: &[OtherPort], log: Option<&str>) -> String {
+pub fn ports_json(ports: &[PortInfo], boards: &[Board], log: Option<&str>) -> String {
     let items: Vec<String> = ports
         .iter()
         .map(|p| {
@@ -32,19 +32,21 @@ pub fn ports_json(ports: &[PortInfo], others: &[OtherPort], log: Option<&str>) -
             )
         })
         .collect();
-    let rest: Vec<String> = others
+    let rest: Vec<String> = boards
         .iter()
-        .map(|o| {
+        .map(|b| {
             format!(
-                "{{\"port\":\"{}\",\"usb\":\"{}\",\"label\":\"{}\"}}",
-                esc(&o.port),
-                esc(&o.usb),
-                esc(&o.label)
+                "{{\"port\":\"{}\",\"usb\":\"{}\",\"label\":\"{}\",\"serial\":\"{}\",\"state\":\"{}\"}}",
+                esc(&b.port),
+                esc(&b.usb),
+                esc(&b.label),
+                esc(&b.serial),
+                esc(&b.state)
             )
         })
         .collect();
     format!(
-        "{{\"ports\":[{}],\"others\":[{}],\"log\":{}}}",
+        "{{\"ports\":[{}],\"boards\":[{}],\"log\":{}}}",
         items.join(","),
         rest.join(","),
         match log {
@@ -148,11 +150,11 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
     }
 
     if path == "/api/ports" {
-        let (ports, others) = match ctx.hub.lock() {
-            Ok(h) => (h.ports(), h.others()),
+        let (ports, boards) = match ctx.hub.lock() {
+            Ok(h) => (h.ports(), h.boards()),
             Err(_) => (Vec::new(), Vec::new()),
         };
-        let body = ports_json(&ports, &others, ctx.log.as_ref().and_then(|p| p.to_str()));
+        let body = ports_json(&ports, &boards, ctx.log.as_ref().and_then(|p| p.to_str()));
         let _ = request.respond(
             Response::from_string(body).with_header(header("Content-Type", "application/json")),
         );
@@ -168,7 +170,7 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
         let result = match action {
             "get" => ctx.hub.lock().unwrap().send(&key, "#GET\n"),
             "close" => {
-                ctx.hub.lock().unwrap().close(&key);
+                ctx.hub.lock().unwrap().dismiss(&key);
                 Ok(())
             }
             "config" => match int_field(&body, "sf") {
@@ -192,16 +194,23 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
         return;
     }
 
-    // The operator vouching for a board we did not recognise. Nothing is opened
-    // before this, because opening a port resets an ESP32.
-    if path == "/api/port/allow" {
+    // The operator saying what a board is. Nothing is opened before this, because
+    // opening a port pulses DTR and can reset the board on the other end.
+    if path == "/api/board/receiver" || path == "/api/board/ignore" {
+        let receiver = path.ends_with("receiver");
         let mut body = String::new();
         let _ = std::io::Read::read_to_string(&mut request.as_reader(), &mut body);
         let text = match crate::json::str_field(&body, "port") {
             Some(p) => {
-                ctx.hub.lock().unwrap().allow(&p);
-                println!("using {} as a receiver, because you said so", p);
-                String::from("{\"ok\":true}")
+                let mut hub = ctx.hub.lock().unwrap();
+                let r = if receiver { hub.approve(&p) } else { hub.ignore(&p) };
+                match r {
+                    Ok(()) => {
+                        println!("{} is {}", p, if receiver { "a receiver" } else { "left alone" });
+                        String::from("{\"ok\":true}")
+                    }
+                    Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e)),
+                }
             }
             None => String::from("{\"ok\":false,\"error\":\"no port in the request\"}"),
         };
@@ -273,13 +282,16 @@ mod tests {
             status: "open".into(),
             error: None,
         }];
-        let others = vec![OtherPort {
+        let boards = vec![Board {
             port: "/dev/ttyACM0".into(),
             usb: "1a86:55d4".into(),
             label: "CH9102".into(),
+            serial: "58A1".into(),
+            key: "1a86:55d4:58A1".into(),
+            state: "waiting".into(),
         }];
-        let json = ports_json(&ports, &others, Some("/tmp/a.log"));
-        assert_eq!(json, "{\"ports\":[{\"key\":\"rx1\",\"port\":\"/dev/ttyUSB0\",\"usb\":\"10c4:ea60\",\"status\":\"open\",\"error\":null}],\"others\":[{\"port\":\"/dev/ttyACM0\",\"usb\":\"1a86:55d4\",\"label\":\"CH9102\"}],\"log\":\"/tmp/a.log\"}");
+        let json = ports_json(&ports, &boards, Some("/tmp/a.log"));
+        assert_eq!(json, "{\"ports\":[{\"key\":\"rx1\",\"port\":\"/dev/ttyUSB0\",\"usb\":\"10c4:ea60\",\"status\":\"open\",\"error\":null}],\"boards\":[{\"port\":\"/dev/ttyACM0\",\"usb\":\"1a86:55d4\",\"label\":\"CH9102\",\"serial\":\"58A1\",\"state\":\"waiting\"}],\"log\":\"/tmp/a.log\"}");
     }
 
     #[test]

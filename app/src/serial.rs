@@ -1,6 +1,11 @@
-// One thread per open port. Ports are found by their USB bridge, which is the only
-// thing visible before the board says anything. Our T-Beams use a CP2102; the other
-// ids are here because newer boards ship with them.
+// One thread per open port.
+//
+// Nothing is opened until the operator says it is a receiver. That is not caution for
+// its own sake: opening a port pulses DTR, which resets an ESP32, and serialport
+// documents that Linux asserts DTR on open whatever you ask for, so there is no way
+// to listen to an unknown board to find out what it is without possibly resetting it.
+// A ChipSat and a T-Beam can carry the same USB bridge, so the chip cannot tell them
+// apart either. The operator says so once and the board is remembered after that.
 use crate::framing::Framer;
 use crate::logfile::now_ms;
 use std::collections::{HashMap, HashSet};
@@ -11,16 +16,12 @@ use std::time::Duration;
 
 const BAUD: u32 = 115200;
 
-// Only the bridge our own T-Beams use is opened without being asked. Opening a port
-// toggles DTR, which resets an ESP32, so a guess here costs somebody their board:
-// a ChipSat carries a CH9102 and had been reset by this list when it held every
-// ESP32-ish id. Anything else is listed for the operator and left alone.
-const AUTO_OPEN: &[(u16, u16)] = &[
-    (0x10c4, 0xea60),   // Silicon Labs CP2102, the T-Beams we have
-];
-
-pub fn opens_by_itself(vid: u16, pid: u16) -> bool {
-    AUTO_OPEN.contains(&(vid, pid))
+// A board is remembered by its chip and serial number rather than by which port it
+// landed on, so replugging it, or moving it to another socket, still counts as the
+// same board. Plenty of CP2102s ship with the serial 0001, so approving one of those
+// approves every board with that same chip and serial. The list says so.
+pub fn board_key(vid: u16, pid: u16, serial: Option<&str>) -> String {
+    format!("{:04x}:{:04x}:{}", vid, pid, serial.unwrap_or("-"))
 }
 
 // Said out loud in the list so nobody has to recognise a hex id.
@@ -40,12 +41,17 @@ pub enum Event {
     Ports,
 }
 
-// A port we can see but have not touched.
+// Every USB serial port on the machine, and what we are doing about it.
+// state: "receiver" (open), "waiting" (never touched, needs a yes), "dismissed"
+// (disconnected by hand this session), "ignored" (told to leave it alone for good).
 #[derive(Clone)]
-pub struct OtherPort {
+pub struct Board {
     pub port: String,
     pub usb: String,
     pub label: String,
+    pub serial: String,
+    pub key: String,
+    pub state: String,
 }
 
 #[derive(Clone)]
@@ -96,9 +102,11 @@ pub struct Hub {
     open: HashMap<String, Open>,   // by key
     flashing: HashSet<String>,     // device paths a flash owns
     complained: HashSet<String>,   // ports we have already moaned about
-    allowed: HashSet<String>,      // ports the operator told us to use
-    others: Vec<OtherPort>,        // seen, deliberately not opened
-    allow_file: Option<std::path::PathBuf>,
+    approved: HashSet<String>,     // board keys the operator said are receivers
+    ignored: HashSet<String>,      // board keys to leave alone for good
+    dismissed: HashSet<String>,    // device paths disconnected by hand, until replug
+    boards: Vec<Board>,            // every USB serial port and what we do about it
+    store: Option<std::path::PathBuf>,
 }
 
 impl Hub {
@@ -109,51 +117,83 @@ impl Hub {
             open: HashMap::new(),
             flashing: HashSet::new(),
             complained: HashSet::new(),
-            allowed: HashSet::new(),
-            others: Vec::new(),
-            allow_file: None,
+            approved: HashSet::new(),
+            ignored: HashSet::new(),
+            dismissed: HashSet::new(),
+            boards: Vec::new(),
+            store: None,
         }
     }
 
-    // Ports the operator picked last time. Remembered so the field is still no-click
-    // after the first time, for a board whose bridge we do not recognise.
-    pub fn remember_allowed_in(&mut self, dir: &std::path::Path) {
-        let f = dir.join("descent-ground-ports.txt");
+    // What the operator decided last time. Kept beside the binary so a field laptop
+    // stays no-click after the first run.
+    pub fn remember_in(&mut self, dir: &std::path::Path) {
+        let f = dir.join("descent-ground-boards.txt");
         if let Ok(text) = std::fs::read_to_string(&f) {
             for line in text.lines() {
                 let line = line.trim();
-                if !line.is_empty() && !line.starts_with('#') {
-                    self.allowed.insert(line.to_string());
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                match line.split_once(' ') {
+                    Some(("receiver", k)) => { self.approved.insert(k.trim().to_string()); }
+                    Some(("ignore", k)) => { self.ignored.insert(k.trim().to_string()); }
+                    _ => {}
                 }
             }
         }
-        self.allow_file = Some(f);
+        self.store = Some(f);
     }
 
-    pub fn allow(&mut self, port: &str) {
-        self.allowed.insert(port.to_string());
-        self.complained.remove(port);
-        if let Some(f) = &self.allow_file {
-            let mut text = String::from("# ports you told DeSCENT Ground to use as receivers\n");
-            let mut all: Vec<&String> = self.allowed.iter().collect();
-            all.sort();
-            for p in all {
-                text.push_str(p);
-                text.push('\n');
-            }
-            let _ = std::fs::write(f, text);
+    fn save(&self) {
+        let Some(f) = &self.store else { return };
+        let mut text = String::from("# what DeSCENT Ground may open. One board per line.\n");
+        let mut rows: Vec<String> = self
+            .approved
+            .iter()
+            .map(|k| format!("receiver {}", k))
+            .chain(self.ignored.iter().map(|k| format!("ignore {}", k)))
+            .collect();
+        rows.sort();
+        for r in rows {
+            text.push_str(&r);
+            text.push('\n');
         }
+        let _ = std::fs::write(f, text);
+    }
+
+    fn key_of_port(&self, port: &str) -> Option<String> {
+        self.boards.iter().find(|b| b.port == port).map(|b| b.key.clone())
+    }
+
+    // Yes, this one is a receiver. Remembered as a board, so it still counts after a
+    // replug or a move to another socket.
+    pub fn approve(&mut self, port: &str) -> Result<(), String> {
+        let key = self.key_of_port(port).ok_or_else(|| format!("{} is not plugged in", port))?;
+        self.ignored.remove(&key);
+        self.approved.insert(key);
+        self.dismissed.remove(port);
+        self.complained.remove(port);
+        self.save();
         let _ = self.tx.send(Event::Ports);
+        Ok(())
     }
 
-    pub fn others(&self) -> Vec<OtherPort> {
-        self.others.clone()
+    // Not a receiver, and stop asking. Closes it if it happened to be open.
+    pub fn ignore(&mut self, port: &str) -> Result<(), String> {
+        let key = self.key_of_port(port).ok_or_else(|| format!("{} is not plugged in", port))?;
+        self.approved.remove(&key);
+        self.ignored.insert(key);
+        if let Some(k) = self.open.iter().find(|(_, o)| o.port == port).map(|(k, _)| k.clone()) {
+            self.close(&k);
+        }
+        self.save();
+        let _ = self.tx.send(Event::Ports);
+        Ok(())
     }
 
-    pub fn allowed_ports(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.allowed.iter().cloned().collect();
-        v.sort();
-        v
+    pub fn boards(&self) -> Vec<Board> {
+        self.boards.clone()
     }
 
     pub fn ports(&self) -> Vec<PortInfo> {
@@ -178,6 +218,15 @@ impl Hub {
         let mut w = writer.lock().map_err(|_| format!("{} is busy", key))?;
         w.write_all(text.as_bytes()).map_err(|e| format!("{}: {}", key, e))?;
         w.flush().map_err(|e| format!("{}: {}", key, e))
+    }
+
+    // Disconnect by hand. The port stays shut until it is replugged or approved
+    // again: reopening it two seconds later is what made the ✕ useless.
+    pub fn dismiss(&mut self, key: &str) {
+        if let Some(port) = self.open.get(key).map(|o| o.port.clone()) {
+            self.dismissed.insert(port);
+        }
+        self.close(key);
     }
 
     pub fn close(&mut self, key: &str) {
@@ -225,37 +274,55 @@ impl Hub {
     pub fn poll(&mut self) {
         let found = serialport::available_ports().unwrap_or_default();
         let mut seen: Vec<String> = Vec::new();
-        let mut others: Vec<OtherPort> = Vec::new();
+        let mut boards: Vec<Board> = Vec::new();
+        let mut present: HashSet<String> = HashSet::new();
+
         for p in found {
-            let (usb, label, auto) = match &p.port_type {
-                serialport::SerialPortType::UsbPort(u) => (
-                    format!("{:04x}:{:04x}", u.vid, u.pid),
-                    bridge_name(u.vid, u.pid).to_string(),
-                    opens_by_itself(u.vid, u.pid),
-                ),
-                _ => continue,
+            let u = match &p.port_type {
+                serialport::SerialPortType::UsbPort(u) => u.clone(),
+                _ => continue,   // a built-in ttyS is never one of ours
             };
-            if !auto && !self.allowed.contains(&p.port_name) {
-                // Somebody else's board until we are told otherwise. Not opened, because
-                // opening it would reset it.
-                others.push(OtherPort { port: p.port_name.clone(), usb, label });
+            present.insert(p.port_name.clone());
+            let serial = u.serial_number.clone().unwrap_or_default();
+            let key = board_key(u.vid, u.pid, u.serial_number.as_deref());
+            let usb = format!("{:04x}:{:04x}", u.vid, u.pid);
+            let label = bridge_name(u.vid, u.pid).to_string();
+
+            let approved = self.approved.contains(&key);
+            let state = if self.ignored.contains(&key) {
+                "ignored"
+            } else if self.dismissed.contains(&p.port_name) {
+                "dismissed"
+            } else if approved {
+                "receiver"
+            } else {
+                "waiting"
+            };
+            boards.push(Board {
+                port: p.port_name.clone(),
+                usb: usb.clone(),
+                label,
+                serial,
+                key,
+                state: state.to_string(),
+            });
+
+            if state != "receiver" || self.flashing.contains(&p.port_name) {
                 continue;
             }
-            if self.flashing.contains(&p.port_name) {
-                continue;   // a flash owns this port; keep out of its way
-            }
-            let key = self.keys.key_for(&p.port_name);
-            seen.push(key.clone());
-            if let Some(o) = self.open.get(&key) {
+
+            let rx = self.keys.key_for(&p.port_name);
+            seen.push(rx.clone());
+            if let Some(o) = self.open.get(&rx) {
                 if o.status.lock().map(|s| s.as_str() == "open").unwrap_or(false) {
                     continue;
                 }
-                self.close(&key);   // its reader died; fall through and open it again
+                self.close(&rx);   // its reader died; fall through and open it again
             }
             match serialport::new(&p.port_name, BAUD).timeout(Duration::from_millis(200)).open() {
                 Ok(port) => {
                     self.complained.remove(&p.port_name);
-                    self.spawn(key, p.port_name, usb, port);
+                    self.spawn(rx, p.port_name, usb, port);
                 }
                 Err(e) => {
                     let hint = if e.to_string().contains("ermission") {
@@ -270,7 +337,12 @@ impl Hub {
                 }
             }
         }
-        self.others = others;
+
+        // Unplugging a board clears a by-hand disconnect, so plugging it back in
+        // brings it back the way anyone would expect.
+        self.dismissed.retain(|p| present.contains(p));
+        self.boards = boards;
+
         let gone: Vec<String> = self.open.keys().filter(|k| !seen.contains(k)).cloned().collect();
         for k in gone {
             println!("{} unplugged", k);
@@ -371,13 +443,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_our_own_t_beam_bridge_is_opened_without_being_asked() {
-        assert!(opens_by_itself(0x10c4, 0xea60));    // CP2102, the T-Beams we have
-        // The ChipSat's bridge. Opening it resets the board, so it is never automatic.
-        assert!(!opens_by_itself(0x1a86, 0x55d4));
-        assert!(!opens_by_itself(0x0483, 0x3754));   // ST-Link on a ChipSat
-        assert!(!opens_by_itself(0x303a, 0x1001));   // some other ESP32
-        assert!(!opens_by_itself(0x046d, 0xc52b));   // a Logitech receiver
+    fn a_board_is_remembered_by_its_chip_and_serial_not_its_port() {
+        let a = board_key(0x10c4, 0xea60, Some("0001"));
+        assert_eq!(a, "10c4:ea60:0001");
+        // Same board on another socket is the same board.
+        assert_eq!(a, board_key(0x10c4, 0xea60, Some("0001")));
+        // A different chip is a different board, whatever port it lands on.
+        assert_ne!(a, board_key(0x1a86, 0x55d4, Some("0001")));
+        assert_eq!(board_key(0x1a86, 0x55d4, None), "1a86:55d4:-");
     }
 
     #[test]
@@ -387,13 +460,45 @@ mod tests {
         assert_eq!(bridge_name(0x1234, 0x5678), "USB serial");
     }
 
+    fn board_at(port: &str, key: &str, state: &str) -> Board {
+        Board {
+            port: port.into(),
+            usb: "1a86:55d4".into(),
+            label: "CH9102".into(),
+            serial: "x".into(),
+            key: key.into(),
+            state: state.into(),
+        }
+    }
+
     #[test]
-    fn an_allowed_port_is_no_longer_somebody_elses() {
+    fn nothing_is_a_receiver_until_it_is_said_to_be() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut hub = Hub::new(tx);
-        assert!(!hub.allowed.contains("/dev/ttyACM0"));
-        hub.allow("/dev/ttyACM0");
-        assert!(hub.allowed.contains("/dev/ttyACM0"));
+        hub.boards = vec![board_at("/dev/ttyACM1", "1a86:55d4:x", "waiting")];
+        assert!(!hub.approved.contains("1a86:55d4:x"));
+
+        hub.approve("/dev/ttyACM1").unwrap();
+        assert!(hub.approved.contains("1a86:55d4:x"));
+
+        hub.ignore("/dev/ttyACM1").unwrap();
+        assert!(!hub.approved.contains("1a86:55d4:x"));
+        assert!(hub.ignored.contains("1a86:55d4:x"));
+
+        // A board that is not plugged in cannot be decided about.
+        assert!(hub.approve("/dev/ttyUSB9").unwrap_err().contains("not plugged in"));
+    }
+
+    #[test]
+    fn a_by_hand_disconnect_is_not_undone_two_seconds_later() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut hub = Hub::new(tx);
+        hub.pretend_open("rx1", "/dev/ttyUSB0");
+        hub.dismiss("rx1");
+        assert!(hub.dismissed.contains("/dev/ttyUSB0"));
+        // poll() skips a dismissed port, and only a replug clears it.
+        hub.dismissed.retain(|p| p == "/dev/ttyUSB0");
+        assert!(hub.dismissed.contains("/dev/ttyUSB0"));
     }
 
     #[test]

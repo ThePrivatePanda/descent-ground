@@ -56,9 +56,9 @@ pub fn candidate_ports(hub: &crate::serial::Hub) -> Vec<String> {
         .into_iter()
         .map(|p| p.port_name)
         .collect();
-    for p in hub.allowed_ports() {
-        if live.contains(&p) && !found.contains(&p) {
-            found.push(p);
+    for b in hub.boards() {
+        if b.state == "receiver" && live.contains(&b.port) && !found.contains(&b.port) {
+            found.push(b.port);
         }
     }
     candidates_from(hub, &found)

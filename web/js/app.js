@@ -102,22 +102,39 @@
     return p.key + ', nothing heard yet';
   }
 
-  // Boards the app can see and has deliberately not touched. Opening a port resets an
-  // ESP32, so a ChipSat on the same laptop stays untouched until it is vouched for.
-  function renderOthers() {
-    const others = hub.others || [];
-    if (!others.length) return '';
-    return '<h3>Not touched</h3><p class="note">Plugged in, but left alone. Opening a port resets the ' +
-      'board, so the app only does that for a T-Beam or a port you name here.</p>' +
-      others.map((o) => '<div class="setup-row"><div><b>' + esc(o.port) + '</b><span class="note"> — ' +
-        esc(o.label) + ' (USB ' + esc(o.usb) + ')</span></div>' +
-        '<div class="setup-actions"><button data-allow="' + esc(o.port) + '">Use as receiver</button></div></div>').join('');
+  // Every board plugged in, and what the app is doing about it. Nothing is opened
+  // until it is called a receiver: opening a port pulses DTR and can reset whatever is
+  // on the other end, and the USB chip cannot tell a T-Beam from a ChipSat.
+  const STATE_WORDS = {
+    receiver: 'reading it',
+    waiting: 'not touched',
+    dismissed: 'disconnected by you',
+    ignored: 'left alone',
+  };
+
+  function renderBoards() {
+    const boards = hub.boards || [];
+    if (!boards.length) return '<p class="note">Nothing plugged in.</p>';
+    return '<h3>Boards</h3><p class="note">The app opens a board only once you say it is a receiver, ' +
+      'because opening a port can reset the board on the other end. It remembers the board, not the ' +
+      'socket, so a replug needs no second answer.</p>' +
+      boards.map((b) => {
+        const is = b.state === 'receiver';
+        const buttons = is
+          ? '<button data-not="' + esc(b.port) + '">Not a receiver</button>'
+          : '<button data-yes="' + esc(b.port) + '" class="primary">This is a receiver</button>' +
+            (b.state === 'ignored' ? '' : '<button data-not="' + esc(b.port) + '">Leave it alone</button>');
+        return '<div class="setup-row"><div><b>' + esc(b.port) + '</b><span class="note"> — ' +
+          esc(b.label) + ', USB ' + esc(b.usb) + (b.serial ? ', serial ' + esc(b.serial) : '') +
+          ' — ' + esc(STATE_WORDS[b.state] || b.state) + '</span></div>' +
+          '<div class="setup-actions">' + buttons + '</div></div>';
+      }).join('');
   }
 
   function renderSetup() {
     const body = $('setup-body');
     if (!setup.rows.length) {
-      body.innerHTML = '<p class="note">No T-Beam found. Plug one in and it appears here.</p>' + renderOthers();
+      body.innerHTML = renderBoards();
       return;
     }
     body.innerHTML = setup.rows.map((row) => {
@@ -132,7 +149,7 @@
         '</select></label>';
       return '<div class="setup-row"><div><b>' + esc(row.port) + '</b><span class="note"> — ' + esc(boardNow(row.port)) + '</span></div>' +
         '<div class="setup-actions">' + sf + action + '</div>' + bar + '</div>';
-    }).join('') + renderOthers();
+    }).join('') + renderBoards();
   }
 
   async function openSetup() {
@@ -156,6 +173,17 @@
     renderSetup();
   }
 
+  // First run with boards plugged in and none of them claimed yet: show the panel,
+  // because an empty dashboard with no explanation is the worst of both worlds.
+  let offeredSetup = false;
+  function offerSetupOnce() {
+    if (offeredSetup || !hub.native) return;
+    const boards = hub.boards || [];
+    if (!boards.length || boards.some((b) => b.state === 'receiver')) return;
+    offeredSetup = true;
+    openSetup();
+  }
+
   $('btn-setup').addEventListener('click', () => {
     if ($('setup').hidden) openSetup(); else $('setup').hidden = true;
   });
@@ -169,14 +197,16 @@
   });
 
   $('setup-body').addEventListener('click', async (e) => {
-    const allow = e.target.getAttribute('data-allow');
-    if (allow) {
+    const yes = e.target.getAttribute('data-yes');
+    const not = e.target.getAttribute('data-not');
+    if (yes || not) {
+      const port = yes || not;
       try {
-        await hub.allowPort(allow);
-        toast('Using ' + allow + ' as a receiver');
+        await hub.setBoard(port, !!yes);
+        toast(yes ? 'Reading ' + port : 'Leaving ' + port + ' alone');
         await openSetup();
       } catch (err) {
-        toast('Could not use ' + allow + ': ' + (err.message || err));
+        toast('Could not change ' + port + ': ' + (err.message || err));
       }
       return;
     }
@@ -644,6 +674,7 @@
         (hub.native && r && r.info.sf ? sfSelect(k, r.info.sf) : '') +
         (port && port.status === 'open' ? '<button data-close="' + k + '" title="Disconnect" aria-label="Disconnect ' + esc(k) + '">✕</button>' : '') + '</span>';
     }).join('');
+    offerSetupOnce();
     // Two spreading factors is the normal setup for a test: the LE boards are on SF9, the HP
     // boards on SF12, and one receiver hears only one of them.
     const onSf = [...f.receivers.entries()].filter(([, r]) => r.info.sf);

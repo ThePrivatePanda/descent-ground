@@ -35,7 +35,7 @@
       this.onChange = onChange;
       this.note = note || function () {};
       this.found = [];   // {key, status, error, usb}
-      this.others = [];  // ports the app can see but will not touch
+      this.boards = []; // every usb serial port, and what we do about it
       this.log = null;
       this.web = null;   // a SerialHub, once we know the server on this port is not ours
       this.onFlash = null;   // the setup panel sets this while it is open
@@ -65,7 +65,7 @@
         const j = await r.json();
         if (!Array.isArray(j.ports)) throw new Error('not our /api/ports');
         this.found = j.ports;
-        this.others = j.others || [];
+        this.boards = j.boards || [];
         this.log = j.log || null;
       } catch (err) {
         this.fall(err);
@@ -100,10 +100,12 @@
       await this.refresh();
     }
 
-    // Vouch for a board the app does not recognise. Until this, it is left alone:
-    // opening a port resets an ESP32, and not every ESP32 here is ours.
-    async allowPort(port) {
-      const r = await fetch('/api/port/allow', { method: 'POST', body: JSON.stringify({ port }) });
+    // Say what a board is. Until this, it is left alone: opening a port pulses DTR
+    // and can reset whatever is on the other end, and the chip cannot tell a T-Beam
+    // from a ChipSat. Remembered by board, so a replug needs no second answer.
+    async setBoard(port, isReceiver) {
+      const where = isReceiver ? '/api/board/receiver' : '/api/board/ignore';
+      const r = await fetch(where, { method: 'POST', body: JSON.stringify({ port }) });
       const j = await r.json().catch(() => ({ ok: false }));
       if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
       await this.refresh();
