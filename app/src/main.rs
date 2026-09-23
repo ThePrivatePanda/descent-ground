@@ -6,6 +6,7 @@ mod flash;
 mod framing;
 mod json;
 mod logfile;
+mod opts;
 mod serial;
 mod server;
 mod ws;
@@ -21,12 +22,21 @@ fn main() {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let opts = opts::parse(&argv, opts::read_conf(&dir).as_deref());
+    if opts.help {
+        print!("{}", opts::HELP);
+        return;
+    }
+
     let (server, port) = match server::bind() {
         Ok(Bound::Ours(s, p)) => (s, p),
         Ok(Bound::AlreadyRunning(p)) => {
             let url = format!("http://127.0.0.1:{}/", p);
             println!("DeSCENT Ground is already running at {}", url);
-            let _ = webbrowser::open(&url);
+            if opts.open_browser {
+                let _ = webbrowser::open(&url);
+            }
             return;
         }
         Err(e) => {
@@ -76,7 +86,11 @@ fn main() {
     // Ctrl-C ends the process outright, so the log is flushed every five seconds
     // rather than on the way out. The most a kill can cost is that tail.
     println!("Ctrl-C to stop. Closing the browser tab does not stop it.");
-    let _ = webbrowser::open(&url);
+    if opts.open_browser {
+        let _ = webbrowser::open(&url);
+    } else {
+        println!("Not opening a browser. Open that address yourself when you want it.");
+    }
 
     let mut since_flush = std::time::Instant::now();
     for ev in rx {

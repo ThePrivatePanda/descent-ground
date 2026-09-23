@@ -10,6 +10,12 @@ For running it without opening the page or picking ports by hand: grab `DescentG
 - Linux: you need to be in the `dialout` group, the same one Chrome's Web Serial already needs.
 - Needs no internet at all, on either platform.
 
+It opens your browser on startup. To stop that, run it with `--no-browser`, or put
+`browser = no` in a file called `descent-ground.conf` beside the program — a double-click cannot
+pass a flag, so the file is the way to make it stick. Either way it prints its address, and you
+open that when you want it. `--browser` overrides the file for one run, and `--help` lists the
+lot.
+
 Every board you plug in is listed under **Set up receiver** with its USB chip and serial number.
 You say which ones are receivers; the app opens those and leaves everything else alone. It asks
 first because opening a port pulses DTR, which resets an ESP32, and the USB chip cannot tell a
