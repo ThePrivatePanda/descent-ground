@@ -2,7 +2,17 @@
 
 Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-Beam LoRa receivers over USB.
 
+## Standalone executable
+
+For running it without opening the page or picking ports by hand: grab `DescentGround.exe` (Windows) or `descent-ground` (Linux) from the [Releases](../../releases) page. One file, no install. Double-click it and it opens your browser to the dashboard, finds every T-Beam plugged in with no port picker, and writes every line from every receiver to a log file next to itself, whether or not a browser is open.
+
+- Windows: the exe is unsigned, so SmartScreen warns once — More info → Run anyway.
+- Linux: you need to be in the `dialout` group, the same one Chrome's Web Serial already needs.
+- Needs no internet at all, on either platform.
+
 ## Run it
+
+For just the dashboard page, with no executable:
 
 1. Download this repo (green **Code** button → **Download ZIP**) and unzip it. No install, no internet needed.
 2. Double-click **`Open DeSCENT Ground.html`** in Chrome or Edge (Windows, macOS, Linux, ChromeOS).
