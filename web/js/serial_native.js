@@ -16,13 +16,14 @@
   }
 
   // One WebSocket frame. Boot noise or half a message must not take the socket down.
-  function makeFrameHandler(onLine, onPorts) {
+  function makeFrameHandler(onLine, onPorts, onFlash) {
     return function (data) {
       let m;
       try { m = JSON.parse(data); } catch (e) { return; }
       if (!m || typeof m !== 'object') return;
       if (m.type === 'line') onLine(m.rx, m.text);
       else if (m.type === 'ports') onPorts();
+      else if (m.type === 'flash' && onFlash) onFlash(m);
     };
   }
 
@@ -36,7 +37,8 @@
       this.found = [];   // {key, status, error, usb}
       this.log = null;
       this.web = null;   // a SerialHub, once we know the server on this port is not ours
-      this.frame = makeFrameHandler(onLine, () => this.refresh());
+      this.onFlash = null;   // the setup panel sets this while it is open
+      this.frame = makeFrameHandler(onLine, () => this.refresh(), (m) => { if (this.onFlash) this.onFlash(m); });
       this.refresh();
       this.connect();
     }
@@ -94,6 +96,24 @@
       if (this.web) return this.web.close(p);
       await fetch('/api/receiver/' + p.key + '/close', { method: 'POST' });
       await this.refresh();
+    }
+
+    // Every T-Beam-shaped port, whether or not we are reading it: reflashing a
+    // working receiver is the normal case.
+    async candidates() {
+      const r = await fetch('/api/flash/candidates');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }
+
+    // Writes the firmware in the app unless image names a file on this machine.
+    async flash(port, sf, image) {
+      const body = { port, sf: Number(sf) };
+      if (image) body.image = image;
+      const r = await fetch('/api/flash', { method: 'POST', body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({ ok: false, error: 'HTTP ' + r.status }));
+      if (!j.ok) throw new Error(j.error || 'flash failed');
+      return j;
     }
 
     async setSf(key, sf) {

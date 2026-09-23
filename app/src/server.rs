@@ -157,10 +157,10 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
                 Ok(())
             }
             "config" => match int_field(&body, "sf") {
-                Some(sf) if (6..=12).contains(&sf) => {
+                Some(sf) if (7..=12).contains(&sf) => {
                     ctx.hub.lock().unwrap().send(&key, &format!("#SET,sf,{}\n", sf))
                 }
-                Some(sf) => Err(format!("spreading factor {} is not between 6 and 12", sf)),
+                Some(sf) => Err(format!("spreading factor {} is not between 7 and 12", sf)),
                 None => Err(String::from("no spreading factor in the request")),
             },
             other => Err(format!("no such action: {}", other)),

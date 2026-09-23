@@ -253,3 +253,9 @@ table { border-collapse: collapse; width: 100%; }
   .charts { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* ---------- set up receiver ---------- */
+.setup-row { padding: 10px 0; border-bottom: 1px solid var(--rule); }
+.setup-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.bar-track { height: 4px; background: var(--rule); border-radius: 2px; margin: 8px 0 4px; }
+.bar-fill { height: 4px; background: var(--accent); border-radius: 2px; transition: width 120ms linear; }

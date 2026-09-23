@@ -61,7 +61,15 @@
     if (settings.autosave) autosave.add(R.formatLine(t, rx, text));
   }, () => renderReceivers(), (msg) => { toast(msg); serialBanner(); });
 
+  // Called again if the transport changes under us, so it has to set both ways round.
   function serialBanner() {
+    const native = hub.native;
+    $('btn-connect').textContent = native ? 'Rescan' : 'Connect receiver';
+    $('btn-connect').title = native
+      ? 'Receivers are found by themselves; this looks again now'
+      : 'Pick a T-Beam serial port';
+    $('btn-setup').hidden = !native;
+    if (!native) $('setup').hidden = true;
     if (hub.supported) return;
     $('unsupported').hidden = false; $('btn-connect').disabled = true;
   }
@@ -71,10 +79,106 @@
     try {
       const p = await hub.add();
       meta(p.key);
-      toast('Connected ' + p.key + (p.usb ? ' (USB ' + p.usb + ')' : ''));
+      toast(hub.native
+        ? hub.ports.length + (hub.ports.length === 1 ? ' receiver' : ' receivers') + ' found'
+        : 'Connected ' + p.key + (p.usb ? ' (USB ' + p.usb + ')' : ''));
     } catch (e) {
       if (e && e.name !== 'NotFoundError') toast('Could not open port: ' + (e.message || e));
     }
+  });
+
+  // ---------- setting up a receiver ----------
+  // Writing firmware to a T-Beam. The board is normally already being read, so the
+  // app hands the port over and hands it back; the existing firmware is saved first.
+  const setup = { rows: [], busy: null, pct: 0, note: '' };
+
+  function boardNow(port) {
+    const p = hub.ports.find((x) => x.port === port);
+    if (!p) return 'not being read';
+    const r = fleet().receivers.get(p.key);
+    const m = rxMeta.get(p.key);
+    if (r && r.id) return p.key + ' ' + r.id + (r.info && r.info.sf ? ', SF' + r.info.sf : '');
+    if (m && m.source === 'csv') return p.key + ', CSV firmware';
+    return p.key + ', nothing heard yet';
+  }
+
+  function renderSetup() {
+    const body = $('setup-body');
+    if (!setup.rows.length) {
+      body.innerHTML = '<p class="note">No T-Beam found. Plug one in and it appears here.</p>';
+      return;
+    }
+    body.innerHTML = setup.rows.map((row) => {
+      const busy = setup.busy === row.port;
+      const bar = busy ? '<div class="bar-track"><div class="bar-fill" style="width:' + setup.pct + '%"></div></div><span class="note">' + esc(setup.note) + '</span>' : '';
+      const action = busy ? ''
+        : row.confirm
+          ? '<button data-flash="' + esc(row.port) + '" class="primary">Overwrite it</button><button data-cancel="' + esc(row.port) + '">Cancel</button>'
+          : '<button data-ask="' + esc(row.port) + '"' + (setup.busy ? ' disabled' : '') + '>Flash</button>';
+      const sf = busy ? '' : '<label class="note">comes up on <select data-sf="' + esc(row.port) + '">' +
+        [7, 8, 9, 10, 11, 12].map((n) => '<option value="' + n + '"' + (n === row.sf ? ' selected' : '') + '>SF' + n + '</option>').join('') +
+        '</select></label>';
+      return '<div class="setup-row"><div><b>' + esc(row.port) + '</b><span class="note"> — ' + esc(boardNow(row.port)) + '</span></div>' +
+        '<div class="setup-actions">' + sf + action + '</div>' + bar + '</div>';
+    }).join('');
+  }
+
+  async function openSetup() {
+    $('setup').hidden = false;
+    $('setup-body').innerHTML = '<p class="note">Looking for boards…</p>';
+    hub.onFlash = (m) => {
+      setup.pct = m.pct || 0;
+      setup.note = m.note || '';
+      renderSetup();
+    };
+    try {
+      const j = await hub.candidates();
+      setup.rows = (j.candidates || []).map((c) => ({ port: c.port, sf: 9, confirm: false }));
+      $('setup-note').textContent = j.firmware
+        ? 'Writes ' + j.firmware + '. The board\'s current firmware is saved beside the app first.'
+        : 'This build has no firmware in it.';
+    } catch (e) {
+      setup.rows = [];
+      $('setup-note').textContent = 'Could not ask the app: ' + (e.message || e);
+    }
+    renderSetup();
+  }
+
+  $('btn-setup').addEventListener('click', () => {
+    if ($('setup').hidden) openSetup(); else $('setup').hidden = true;
+  });
+  $('setup-close').addEventListener('click', () => { $('setup').hidden = true; hub.onFlash = null; });
+
+  $('setup-body').addEventListener('change', (e) => {
+    const port = e.target.getAttribute('data-sf');
+    if (!port) return;
+    const row = setup.rows.find((r) => r.port === port);
+    if (row) row.sf = Number(e.target.value);
+  });
+
+  $('setup-body').addEventListener('click', async (e) => {
+    const ask = e.target.getAttribute('data-ask');
+    const cancel = e.target.getAttribute('data-cancel');
+    const go = e.target.getAttribute('data-flash');
+    if (ask || cancel) {
+      const row = setup.rows.find((r) => r.port === (ask || cancel));
+      if (row) row.confirm = !!ask;
+      renderSetup();
+      return;
+    }
+    if (!go) return;
+    const row = setup.rows.find((r) => r.port === go);
+    if (!row) return;
+    setup.busy = go; setup.pct = 0; setup.note = 'saving the current firmware'; row.confirm = false;
+    renderSetup();
+    try {
+      const j = await hub.flash(go, row.sf);
+      toast('Flashed ' + go + ' on SF' + row.sf + '. Old firmware saved to ' + j.backup);
+    } catch (err) {
+      toast('Did not flash ' + go + ': ' + (err.message || err));
+    }
+    setup.busy = null;
+    renderSetup();
   });
 
   // ---------- recording ----------

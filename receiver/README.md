@@ -41,7 +41,7 @@ arduino-cli upload  --fqbn esp32:esp32:t-beam -p /dev/ttyACM0 DescentRawReceiver
 ```
 
 The port may be `/dev/ttyUSB0` or `/dev/ttyACM0`, depending on the board's USB chip.
-Build size: 366 KB flash (27%), 24.8 KB RAM (7%).
+Build size: 382 KB flash (29%), 24.8 KB RAM (7%).
 
 ## Serial protocol
 
@@ -49,32 +49,35 @@ Build size: 366 KB flash (27%), 24.8 KB RAM (7%).
 
 | Line | When | Fields |
 |---|---|---|
-| `#DG,RX,v1,id=<ID>,f=915.0,bw=125.0,sf=9,cr=7,sync=0x12,pre=8` | boot, then every 30 s | `ID` = last 3 bytes of ESP32 eFuse MAC, 6 uppercase hex |
+| `#DG,RX,v1,id=<ID>,f=915.0,bw=125.0,sf=9,cr=7,sync=0x12,pre=8` | boot, every 30 s, on `#GET`, after an accepted `#SET` | `ID` = last 3 bytes of ESP32 eFuse MAC, 6 uppercase hex |
 | `PKT,<len>,<hex>,<rssi>,<snr>,<freqErr>` | good radio read | byte count; payload uppercase hex, no spaces; RSSI dBm (1 dp); SNR dB (2 dp); frequency error Hz (integer) |
 | `ERR,<code>,<rssi>,<snr>` | bad radio read | RadioLib code (`-7` PHY CRC mismatch, `-24` header damaged); RSSI; SNR |
 | `HB,<millis>,<ok>,<err>` | every 5 s | uptime ms; good packets since boot; errors since boot |
 | `#DG,FATAL,<code>` | setup failure | RadioLib code; repeated every 5 s, board halted |
+| `#GET` | sent to the board | no fields; reprints the `#DG,RX` header at once |
+| `#SET,<key>,<value>` | sent to the board | `freq` 137-1020 MHz; `bw` 7.8 / 10.4 / 15.6 / 20.8 / 31.25 / 41.7 / 62.5 / 125 / 250 / 500 kHz; `sf` 7-12; `cr` 5-8; `sync` 0x00-0xFF; `pre` 6-65535 |
+| `#DG,ERR,<key>` | command rejected | the key that would not take; nothing changed |
 
 Example: `PKT,55,0000…0923,-50.0,13.75,-1234`
 
 A failed `startReceive()` is reported as `ERR,<code>,0.0,0.00`.
 
+Settings changed with `#SET` are kept in flash (NVS namespace `dgrx`) and come back after a reboot.
+
 ## Radio parameters
 
-One block at the top of `DescentRawReceiver.ino` (`RADIO PARAMETERS`):
+Defaults are one block at the top of `DescentRawReceiver.ino` (`RADIO PARAMETERS`); `#SET` changes any of them without a recompile.
 
-| Constant | Value |
+| `#SET` key | Default |
 |---|---|
-| `kFrequencyMHz` | 915.0 |
-| `kBandwidthKHz` | 125.0 |
-| `kSpreadingFactor` | 9 (may change to 7) |
-| `kCodingRate` | 7 (4/7) |
-| `kSyncWord` | 0x12 |
-| `kPreambleLength` | 8 |
-| `kGain` | 1 |
-| `kPhyCrc` | true |
+| `freq` | 915.0 MHz |
+| `bw` | 125.0 kHz |
+| `sf` | 9 |
+| `cr` | 7 (4/7) |
+| `sync` | 0x12 |
+| `pre` | 8 |
 
-Explicit header and standard IQ are RadioLib defaults. The `#DG,RX` header line reports the values in use.
+`kGain` (1) and `kPhyCrc` (true) stay compile-time constants. Explicit header and standard IQ are RadioLib defaults. The `#DG,RX` header line reports the values in use.
 Must match the ChipSat transmitters.
 
 ## OLED

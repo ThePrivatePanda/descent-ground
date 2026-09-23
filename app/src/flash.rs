@@ -14,8 +14,12 @@ include!(concat!(env!("OUT_DIR"), "/firmware.rs"));
 const MIN_IMAGE: usize = 200_000;
 const MAX_IMAGE: usize = 4 * 1024 * 1024;
 
-// An ESP32 image starts with 0xE9. Refusing anything else is the difference between
-// a failed flash and a board that needs a cable and a rescue.
+// We write at 0x0, so the file has to be a merged image: the first 4 kB are padding
+// and the bootloader's 0xE9 magic sits at 0x1000. A bare app image also starts with
+// 0xE9, and writing one at 0x0 leaves a board that needs a cable and a rescue, so it
+// is named and refused rather than accepted.
+const BOOTLOADER_AT: usize = 0x1000;
+
 pub fn check_image(data: &[u8]) -> Result<(), String> {
     if data.len() < MIN_IMAGE {
         return Err(format!("that file is too small for a receiver image ({} bytes)", data.len()));
@@ -23,10 +27,15 @@ pub fn check_image(data: &[u8]) -> Result<(), String> {
     if data.len() > MAX_IMAGE {
         return Err(format!("that file is larger than the flash ({} bytes)", data.len()));
     }
-    if data[0] != 0xE9 {
-        return Err(String::from("that file does not start with E9, so it is not an esp32 image"));
+    if data.get(BOOTLOADER_AT) == Some(&0xE9) {
+        return Ok(());
     }
-    Ok(())
+    if data.first() == Some(&0xE9) {
+        return Err(String::from(
+            "that is an app image on its own. It needs merging with the bootloader and partitions first (esptool merge_bin).",
+        ));
+    }
+    Err(String::from("that file has no esp32 bootloader at 0x1000, so it is not a merged image"))
 }
 
 // Every port is offered, including boards that are receiving right now: reflashing a
@@ -174,8 +183,8 @@ pub fn handle_request(body: &str, ctx: &Arc<Ctx>) -> String {
         None => return err("no port in the request"),
     };
     let sf = int_field(body, "sf").unwrap_or(9);
-    if !(6..=12).contains(&sf) {
-        return err("spreading factor must be between 6 and 12");
+    if !(7..=12).contains(&sf) {
+        return err("spreading factor must be between 7 and 12");
     }
 
     let owned: Vec<u8>;
@@ -270,9 +279,25 @@ mod tests {
     }
 
     #[test]
-    fn an_operator_supplied_image_must_look_like_an_esp32_image() {
-        assert!(check_image(&[0xE9; 300_000]).is_ok());
-        assert!(check_image(&[0x00; 300_000]).unwrap_err().contains("E9"));
+    fn an_operator_supplied_image_must_be_a_merged_one() {
+        let mut merged = vec![0xFF; 300_000];
+        merged[BOOTLOADER_AT] = 0xE9;
+        assert!(check_image(&merged).is_ok());
+
+        // An app image on its own: 0xE9 at the front, nothing at 0x1000.
+        let mut app = vec![0x00; 300_000];
+        app[0] = 0xE9;
+        assert!(check_image(&app).unwrap_err().contains("merging"));
+
+        assert!(check_image(&[0x00; 300_000]).unwrap_err().contains("0x1000"));
         assert!(check_image(&[0xE9; 10]).unwrap_err().contains("too small"));
+    }
+
+    #[test]
+    fn the_image_we_ship_passes_our_own_check() {
+        match IMAGE {
+            Some(i) => check_image(i).expect("the embedded firmware must be flashable"),
+            None => panic!("this build has no embedded firmware; build the merged image first"),
+        }
     }
 }

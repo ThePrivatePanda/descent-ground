@@ -13,6 +13,7 @@
 <header class="bar">
   <span class="brand">DeSCENT <span>Ground</span></span>
   <button id="btn-connect" class="primary" title="Pick a T-Beam serial port">Connect receiver</button>
+  <button id="btn-setup" class="quiet" title="Write the receiver firmware to a T-Beam" hidden>Set up receiver</button>
   <div id="receivers" class="receivers"></div>
   <span class="spacer"></span>
   <span id="mode" class="mode"></span>
@@ -111,6 +112,18 @@
     <span class="note">Saved in this browser as you change them.</span>
     <span class="spacer"></span>
     <button id="settings-reset">Reset to defaults</button>
+  </div>
+</aside>
+
+<aside id="setup" class="drawer" hidden>
+  <div class="drawer-head">
+    <h2>Set up receiver</h2>
+    <span class="spacer"></span>
+    <button id="setup-close">Close</button>
+  </div>
+  <div id="setup-body" class="drawer-body"></div>
+  <div class="drawer-foot">
+    <span class="note" id="setup-note"></span>
   </div>
 </aside>
 
