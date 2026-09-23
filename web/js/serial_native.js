@@ -35,6 +35,7 @@
       this.onChange = onChange;
       this.note = note || function () {};
       this.found = [];   // {key, status, error, usb}
+      this.others = [];  // ports the app can see but will not touch
       this.log = null;
       this.web = null;   // a SerialHub, once we know the server on this port is not ours
       this.onFlash = null;   // the setup panel sets this while it is open
@@ -64,6 +65,7 @@
         const j = await r.json();
         if (!Array.isArray(j.ports)) throw new Error('not our /api/ports');
         this.found = j.ports;
+        this.others = j.others || [];
         this.log = j.log || null;
       } catch (err) {
         this.fall(err);
@@ -95,6 +97,15 @@
     async close(p) {
       if (this.web) return this.web.close(p);
       await fetch('/api/receiver/' + p.key + '/close', { method: 'POST' });
+      await this.refresh();
+    }
+
+    // Vouch for a board the app does not recognise. Until this, it is left alone:
+    // opening a port resets an ESP32, and not every ESP32 here is ours.
+    async allowPort(port) {
+      const r = await fetch('/api/port/allow', { method: 'POST', body: JSON.stringify({ port }) });
+      const j = await r.json().catch(() => ({ ok: false }));
+      if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
       await this.refresh();
     }
 

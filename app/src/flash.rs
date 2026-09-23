@@ -46,17 +46,21 @@ pub fn candidates_from(hub: &crate::serial::Hub, found: &[String]) -> Vec<String
     v
 }
 
-// Every T-Beam-shaped port on the machine, whether or not we are reading it.
+// Only boards the app is already reading, or ones the operator has explicitly
+// allowed. A port we have never been told to touch is never offered for flashing:
+// writing firmware to somebody's ChipSat is not a recoverable mistake.
 pub fn candidate_ports(hub: &crate::serial::Hub) -> Vec<String> {
-    let found: Vec<String> = serialport::available_ports()
+    let mut found: Vec<String> = hub.ports().into_iter().map(|p| p.port).collect();
+    let live: Vec<String> = serialport::available_ports()
         .unwrap_or_default()
         .into_iter()
-        .filter(|p| match &p.port_type {
-            serialport::SerialPortType::UsbPort(u) => crate::serial::is_candidate(u.vid, u.pid),
-            _ => false,
-        })
         .map(|p| p.port_name)
         .collect();
+    for p in hub.allowed_ports() {
+        if live.contains(&p) && !found.contains(&p) {
+            found.push(p);
+        }
+    }
     candidates_from(hub, &found)
 }
 

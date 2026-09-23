@@ -102,10 +102,22 @@
     return p.key + ', nothing heard yet';
   }
 
+  // Boards the app can see and has deliberately not touched. Opening a port resets an
+  // ESP32, so a ChipSat on the same laptop stays untouched until it is vouched for.
+  function renderOthers() {
+    const others = hub.others || [];
+    if (!others.length) return '';
+    return '<h3>Not touched</h3><p class="note">Plugged in, but left alone. Opening a port resets the ' +
+      'board, so the app only does that for a T-Beam or a port you name here.</p>' +
+      others.map((o) => '<div class="setup-row"><div><b>' + esc(o.port) + '</b><span class="note"> — ' +
+        esc(o.label) + ' (USB ' + esc(o.usb) + ')</span></div>' +
+        '<div class="setup-actions"><button data-allow="' + esc(o.port) + '">Use as receiver</button></div></div>').join('');
+  }
+
   function renderSetup() {
     const body = $('setup-body');
     if (!setup.rows.length) {
-      body.innerHTML = '<p class="note">No T-Beam found. Plug one in and it appears here.</p>';
+      body.innerHTML = '<p class="note">No T-Beam found. Plug one in and it appears here.</p>' + renderOthers();
       return;
     }
     body.innerHTML = setup.rows.map((row) => {
@@ -120,7 +132,7 @@
         '</select></label>';
       return '<div class="setup-row"><div><b>' + esc(row.port) + '</b><span class="note"> — ' + esc(boardNow(row.port)) + '</span></div>' +
         '<div class="setup-actions">' + sf + action + '</div>' + bar + '</div>';
-    }).join('');
+    }).join('') + renderOthers();
   }
 
   async function openSetup() {
@@ -157,6 +169,17 @@
   });
 
   $('setup-body').addEventListener('click', async (e) => {
+    const allow = e.target.getAttribute('data-allow');
+    if (allow) {
+      try {
+        await hub.allowPort(allow);
+        toast('Using ' + allow + ' as a receiver');
+        await openSetup();
+      } catch (err) {
+        toast('Could not use ' + allow + ': ' + (err.message || err));
+      }
+      return;
+    }
     const ask = e.target.getAttribute('data-ask');
     const cancel = e.target.getAttribute('data-cancel');
     const go = e.target.getAttribute('data-flash');

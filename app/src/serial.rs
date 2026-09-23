@@ -11,20 +11,41 @@ use std::time::Duration;
 
 const BAUD: u32 = 115200;
 
-const CANDIDATES: &[(u16, u16)] = &[
-    (0x10c4, 0xea60),   // Silicon Labs CP210x
-    (0x1a86, 0x55d4),   // WCH CH9102
-    (0x1a86, 0x7523),   // WCH CH340
-    (0x303a, 0x1001),   // Espressif native USB
+// Only the bridge our own T-Beams use is opened without being asked. Opening a port
+// toggles DTR, which resets an ESP32, so a guess here costs somebody their board:
+// a ChipSat carries a CH9102 and had been reset by this list when it held every
+// ESP32-ish id. Anything else is listed for the operator and left alone.
+const AUTO_OPEN: &[(u16, u16)] = &[
+    (0x10c4, 0xea60),   // Silicon Labs CP2102, the T-Beams we have
 ];
 
-pub fn is_candidate(vid: u16, pid: u16) -> bool {
-    CANDIDATES.contains(&(vid, pid))
+pub fn opens_by_itself(vid: u16, pid: u16) -> bool {
+    AUTO_OPEN.contains(&(vid, pid))
+}
+
+// Said out loud in the list so nobody has to recognise a hex id.
+pub fn bridge_name(vid: u16, pid: u16) -> &'static str {
+    match (vid, pid) {
+        (0x10c4, 0xea60) => "CP2102",
+        (0x1a86, 0x55d4) => "CH9102",
+        (0x1a86, 0x7523) => "CH340",
+        (0x303a, _) => "ESP32 native USB",
+        (0x0483, _) => "ST-Link",
+        _ => "USB serial",
+    }
 }
 
 pub enum Event {
     Line { key: String, t_ms: u128, text: String },
     Ports,
+}
+
+// A port we can see but have not touched.
+#[derive(Clone)]
+pub struct OtherPort {
+    pub port: String,
+    pub usb: String,
+    pub label: String,
 }
 
 #[derive(Clone)]
@@ -75,6 +96,9 @@ pub struct Hub {
     open: HashMap<String, Open>,   // by key
     flashing: HashSet<String>,     // device paths a flash owns
     complained: HashSet<String>,   // ports we have already moaned about
+    allowed: HashSet<String>,      // ports the operator told us to use
+    others: Vec<OtherPort>,        // seen, deliberately not opened
+    allow_file: Option<std::path::PathBuf>,
 }
 
 impl Hub {
@@ -85,7 +109,51 @@ impl Hub {
             open: HashMap::new(),
             flashing: HashSet::new(),
             complained: HashSet::new(),
+            allowed: HashSet::new(),
+            others: Vec::new(),
+            allow_file: None,
         }
+    }
+
+    // Ports the operator picked last time. Remembered so the field is still no-click
+    // after the first time, for a board whose bridge we do not recognise.
+    pub fn remember_allowed_in(&mut self, dir: &std::path::Path) {
+        let f = dir.join("descent-ground-ports.txt");
+        if let Ok(text) = std::fs::read_to_string(&f) {
+            for line in text.lines() {
+                let line = line.trim();
+                if !line.is_empty() && !line.starts_with('#') {
+                    self.allowed.insert(line.to_string());
+                }
+            }
+        }
+        self.allow_file = Some(f);
+    }
+
+    pub fn allow(&mut self, port: &str) {
+        self.allowed.insert(port.to_string());
+        self.complained.remove(port);
+        if let Some(f) = &self.allow_file {
+            let mut text = String::from("# ports you told DeSCENT Ground to use as receivers\n");
+            let mut all: Vec<&String> = self.allowed.iter().collect();
+            all.sort();
+            for p in all {
+                text.push_str(p);
+                text.push('\n');
+            }
+            let _ = std::fs::write(f, text);
+        }
+        let _ = self.tx.send(Event::Ports);
+    }
+
+    pub fn others(&self) -> Vec<OtherPort> {
+        self.others.clone()
+    }
+
+    pub fn allowed_ports(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.allowed.iter().cloned().collect();
+        v.sort();
+        v
     }
 
     pub fn ports(&self) -> Vec<PortInfo> {
@@ -157,13 +225,22 @@ impl Hub {
     pub fn poll(&mut self) {
         let found = serialport::available_ports().unwrap_or_default();
         let mut seen: Vec<String> = Vec::new();
+        let mut others: Vec<OtherPort> = Vec::new();
         for p in found {
-            let usb = match &p.port_type {
-                serialport::SerialPortType::UsbPort(u) if is_candidate(u.vid, u.pid) => {
-                    format!("{:04x}:{:04x}", u.vid, u.pid)
-                }
+            let (usb, label, auto) = match &p.port_type {
+                serialport::SerialPortType::UsbPort(u) => (
+                    format!("{:04x}:{:04x}", u.vid, u.pid),
+                    bridge_name(u.vid, u.pid).to_string(),
+                    opens_by_itself(u.vid, u.pid),
+                ),
                 _ => continue,
             };
+            if !auto && !self.allowed.contains(&p.port_name) {
+                // Somebody else's board until we are told otherwise. Not opened, because
+                // opening it would reset it.
+                others.push(OtherPort { port: p.port_name.clone(), usb, label });
+                continue;
+            }
             if self.flashing.contains(&p.port_name) {
                 continue;   // a flash owns this port; keep out of its way
             }
@@ -193,6 +270,7 @@ impl Hub {
                 }
             }
         }
+        self.others = others;
         let gone: Vec<String> = self.open.keys().filter(|k| !seen.contains(k)).cloned().collect();
         for k in gone {
             println!("{} unplugged", k);
@@ -293,11 +371,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_usb_bridges_are_candidates_and_a_mouse_is_not() {
-        assert!(is_candidate(0x10c4, 0xea60));   // CP210x, the bench board
-        assert!(is_candidate(0x1a86, 0x55d4));   // CH9102
-        assert!(is_candidate(0x303a, 0x1001));   // ESP32-S3 native USB
-        assert!(!is_candidate(0x046d, 0xc52b));  // Logitech receiver
+    fn only_our_own_t_beam_bridge_is_opened_without_being_asked() {
+        assert!(opens_by_itself(0x10c4, 0xea60));    // CP2102, the T-Beams we have
+        // The ChipSat's bridge. Opening it resets the board, so it is never automatic.
+        assert!(!opens_by_itself(0x1a86, 0x55d4));
+        assert!(!opens_by_itself(0x0483, 0x3754));   // ST-Link on a ChipSat
+        assert!(!opens_by_itself(0x303a, 0x1001));   // some other ESP32
+        assert!(!opens_by_itself(0x046d, 0xc52b));   // a Logitech receiver
+    }
+
+    #[test]
+    fn a_port_is_named_by_its_bridge_not_its_hex_id() {
+        assert_eq!(bridge_name(0x1a86, 0x55d4), "CH9102");
+        assert_eq!(bridge_name(0x0483, 0x3754), "ST-Link");
+        assert_eq!(bridge_name(0x1234, 0x5678), "USB serial");
+    }
+
+    #[test]
+    fn an_allowed_port_is_no_longer_somebody_elses() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut hub = Hub::new(tx);
+        assert!(!hub.allowed.contains("/dev/ttyACM0"));
+        hub.allow("/dev/ttyACM0");
+        assert!(hub.allowed.contains("/dev/ttyACM0"));
     }
 
     #[test]

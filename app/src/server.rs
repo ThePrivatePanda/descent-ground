@@ -1,7 +1,7 @@
 // The dashboard, and the few calls it makes back. Bound to 127.0.0.1 only: this is
 // the operator's own laptop, not a service.
 use crate::json::{esc, int_field};
-use crate::serial::{Hub, PortInfo};
+use crate::serial::{Hub, OtherPort, PortInfo};
 use crate::ws::{Broadcast, Socket};
 use crate::{assets, flash};
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use tungstenite::protocol::Role;
 pub const FIRST_PORT: u16 = 8765;
 pub const LAST_PORT: u16 = 8774;
 
-pub fn ports_json(ports: &[PortInfo], log: Option<&str>) -> String {
+pub fn ports_json(ports: &[PortInfo], others: &[OtherPort], log: Option<&str>) -> String {
     let items: Vec<String> = ports
         .iter()
         .map(|p| {
@@ -32,9 +32,21 @@ pub fn ports_json(ports: &[PortInfo], log: Option<&str>) -> String {
             )
         })
         .collect();
+    let rest: Vec<String> = others
+        .iter()
+        .map(|o| {
+            format!(
+                "{{\"port\":\"{}\",\"usb\":\"{}\",\"label\":\"{}\"}}",
+                esc(&o.port),
+                esc(&o.usb),
+                esc(&o.label)
+            )
+        })
+        .collect();
     format!(
-        "{{\"ports\":[{}],\"log\":{}}}",
+        "{{\"ports\":[{}],\"others\":[{}],\"log\":{}}}",
         items.join(","),
+        rest.join(","),
         match log {
             Some(l) => format!("\"{}\"", esc(l)),
             None => String::from("null"),
@@ -136,8 +148,11 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
     }
 
     if path == "/api/ports" {
-        let ports = ctx.hub.lock().map(|h| h.ports()).unwrap_or_default();
-        let body = ports_json(&ports, ctx.log.as_ref().and_then(|p| p.to_str()));
+        let (ports, others) = match ctx.hub.lock() {
+            Ok(h) => (h.ports(), h.others()),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
+        let body = ports_json(&ports, &others, ctx.log.as_ref().and_then(|p| p.to_str()));
         let _ = request.respond(
             Response::from_string(body).with_header(header("Content-Type", "application/json")),
         );
@@ -173,6 +188,25 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
             Response::from_string(text)
                 .with_status_code(code)
                 .with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    // The operator vouching for a board we did not recognise. Nothing is opened
+    // before this, because opening a port resets an ESP32.
+    if path == "/api/port/allow" {
+        let mut body = String::new();
+        let _ = std::io::Read::read_to_string(&mut request.as_reader(), &mut body);
+        let text = match crate::json::str_field(&body, "port") {
+            Some(p) => {
+                ctx.hub.lock().unwrap().allow(&p);
+                println!("using {} as a receiver, because you said so", p);
+                String::from("{\"ok\":true}")
+            }
+            None => String::from("{\"ok\":false,\"error\":\"no port in the request\"}"),
+        };
+        let _ = request.respond(
+            Response::from_string(text).with_header(header("Content-Type", "application/json")),
         );
         return;
     }
@@ -239,8 +273,13 @@ mod tests {
             status: "open".into(),
             error: None,
         }];
-        let json = ports_json(&ports, Some("/tmp/a.log"));
-        assert_eq!(json, "{\"ports\":[{\"key\":\"rx1\",\"port\":\"/dev/ttyUSB0\",\"usb\":\"10c4:ea60\",\"status\":\"open\",\"error\":null}],\"log\":\"/tmp/a.log\"}");
+        let others = vec![OtherPort {
+            port: "/dev/ttyACM0".into(),
+            usb: "1a86:55d4".into(),
+            label: "CH9102".into(),
+        }];
+        let json = ports_json(&ports, &others, Some("/tmp/a.log"));
+        assert_eq!(json, "{\"ports\":[{\"key\":\"rx1\",\"port\":\"/dev/ttyUSB0\",\"usb\":\"10c4:ea60\",\"status\":\"open\",\"error\":null}],\"others\":[{\"port\":\"/dev/ttyACM0\",\"usb\":\"1a86:55d4\",\"label\":\"CH9102\"}],\"log\":\"/tmp/a.log\"}");
     }
 
     #[test]
@@ -252,7 +291,7 @@ mod tests {
             status: "error".into(),
             error: Some("bad \"thing\"\n".into()),
         }];
-        let json = ports_json(&ports, None);
+        let json = ports_json(&ports, &[], None);
         assert!(json.contains("bad \\\"thing\\\"\\n"), "{}", json);
         assert!(json.ends_with("\"log\":null}"));
     }

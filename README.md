@@ -10,6 +10,12 @@ For running it without opening the page or picking ports by hand: grab `DescentG
 - Linux: you need to be in the `dialout` group, the same one Chrome's Web Serial already needs.
 - Needs no internet at all, on either platform.
 
+It opens a T-Beam by itself (the CP2102 bridge ours use) and nothing else. Any other USB serial
+device, a ChipSat included, is listed under **Set up receiver** as not touched, with a button to
+use it as a receiver if that is really what it is. Opening a port resets an ESP32, so the app will
+not do that to a board it was not told about. A port you name is remembered in
+`descent-ground-ports.txt` beside the app.
+
 ## Run it
 
 For just the dashboard page, with no executable:
