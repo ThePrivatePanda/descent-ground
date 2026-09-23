@@ -3,3 +3,4 @@
 logs/
 .playwright-mcp/
 node_modules/
+app/target/
