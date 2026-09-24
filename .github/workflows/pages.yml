@@ -3,7 +3,6 @@ name: Deploy dashboard
 on:
   push:
     branches: [main]
-    paths: ['web/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -24,6 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: Stamp the build
+        run: |
+          printf '{"commit":"%s","built":"%s"}\n' \
+            "$(git rev-parse --short HEAD)" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > web/version.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web

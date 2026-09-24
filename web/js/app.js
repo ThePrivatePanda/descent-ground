@@ -227,6 +227,14 @@
     renderSetup();
   }
 
+  // Which build this page is, for when someone asks whether the hosted copy is current.
+  // Written by the deploy; absent when the page came off a disk or out of the app.
+  fetch('version.json').then((r) => (r.ok ? r.json() : null)).then((v) => {
+    if (v && v.commit) {
+      document.querySelector('.brand').title = 'build ' + v.commit + ', deployed ' + v.built;
+    }
+  }).catch(() => { /* not deployed from the repo */ });
+
   // First run with boards plugged in and none of them claimed yet: show the panel,
   // because an empty dashboard with no explanation is the worst of both worlds.
   let offeredSetup = false;
