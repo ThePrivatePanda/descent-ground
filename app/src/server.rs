@@ -4,9 +4,10 @@ use crate::json::{esc, int_field};
 use crate::logfile::Log;
 use crate::serial::{Board, Hub, PortInfo};
 use crate::ws::{Broadcast, Socket};
-use crate::{assets, flash, logfile};
-use std::path::PathBuf;
+use crate::{assets, flash, logfile, urlfile};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tiny_http::{Header, Request, Response, Server};
 use tungstenite::protocol::Role;
 
@@ -58,6 +59,22 @@ pub fn ports_json(ports: &[PortInfo], boards: &[Board], log: Option<&str>) -> St
     )
 }
 
+// What a launcher polls to know we are up. Built from numbers rather than read off a
+// running server, so it can be checked without one.
+pub fn health_json(version: &str, port: u16, log: Option<&str>, boards: usize, receivers: usize) -> String {
+    format!(
+        "{{\"ok\":true,\"version\":\"{}\",\"port\":{},\"log\":{},\"boards\":{},\"receivers\":{}}}",
+        esc(version),
+        port,
+        match log {
+            Some(l) => format!("\"{}\"", esc(l)),
+            None => String::from("null"),
+        },
+        boards,
+        receivers
+    )
+}
+
 fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("static header")
 }
@@ -70,7 +87,22 @@ pub enum Bound {
     AlreadyRunning(u16),
 }
 
-pub fn bind() -> Result<Bound, String> {
+// A port that was asked for is the only one tried: a script that said 8900 and quietly
+// got 8765 has no way to notice. Our own copy already on it is still worth reporting as
+// that rather than as a failure.
+pub fn bind(want: Option<u16>) -> Result<Bound, String> {
+    if let Some(port) = want {
+        return match Server::http(("127.0.0.1", port)) {
+            Ok(s) => Ok(Bound::Ours(s, port)),
+            Err(e) => {
+                if ours_is_listening(port) {
+                    Ok(Bound::AlreadyRunning(port))
+                } else {
+                    Err(format!("port {} is taken: {}", port, e))
+                }
+            }
+        };
+    }
     let mut last = String::new();
     for port in FIRST_PORT..=LAST_PORT {
         match Server::http(("127.0.0.1", port)) {
@@ -86,20 +118,63 @@ pub fn bind() -> Result<Bound, String> {
     Err(last)
 }
 
-fn ours_is_listening(port: u16) -> bool {
+// One request, one answer, from outside the running app. HTTP/1.0 so the other end
+// closes and the read ends.
+fn ask(port: u16, request: &str) -> Option<String> {
     use std::io::{Read, Write};
-    let addr = format!("127.0.0.1:{}", port);
-    let mut s = match std::net::TcpStream::connect(&addr) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
-    if s.write_all(b"GET /api/ports HTTP/1.0\r\n\r\n").is_err() {
-        return false;
-    }
+    let mut s = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).ok()?;
+    let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
+    s.write_all(request.as_bytes()).ok()?;
     let mut buf = String::new();
     let _ = s.take(2048).read_to_string(&mut buf);
-    buf.contains("\"ports\"")
+    Some(buf)
+}
+
+fn ours_is_listening(port: u16) -> bool {
+    match ask(port, "GET /api/ports HTTP/1.0\r\n\r\n") {
+        Some(buf) => buf.contains("\"ports\""),
+        None => false,
+    }
+}
+
+fn health_answers(port: u16) -> bool {
+    match ask(port, "GET /api/health HTTP/1.0\r\n\r\n") {
+        Some(buf) => buf.contains("\"receivers\":"),
+        None => false,
+    }
+}
+
+// Where the running copy is, for --stop. The url file names the port when one was
+// written, and our ports are walked when it was not. Either way the port has to answer
+// /api/health first: a kill leaves the file behind, and an older build answers
+// /api/ports without knowing how to stop.
+pub fn running_port(dir: &Path, want: Option<u16>) -> Option<u16> {
+    if let Some(port) = want {
+        return if health_answers(port) { Some(port) } else { None };
+    }
+    if let Some(port) = urlfile::port(dir) {
+        if health_answers(port) {
+            return Some(port);
+        }
+    }
+    (FIRST_PORT..=LAST_PORT).find(|p| health_answers(*p))
+}
+
+// Ask, then wait for the port to go quiet. "It said yes" is not "it is gone", and a
+// script that starts another copy straight after needs the port free.
+pub fn quit(port: u16) -> Result<(), String> {
+    let answer = ask(port, "POST /api/quit HTTP/1.0\r\nContent-Length: 0\r\n\r\n")
+        .ok_or_else(|| format!("port {} stopped answering before it replied", port))?;
+    if !answer.contains("\"ok\":true") {
+        return Err(format!("port {} would not take the request", port));
+    }
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(100));
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_err() {
+            return Ok(());
+        }
+    }
+    Err(format!("port {} still answers three seconds after agreeing to stop", port))
 }
 
 pub struct Ctx {
@@ -107,6 +182,23 @@ pub struct Ctx {
     pub broadcast: Broadcast,
     pub log: Arc<Mutex<Option<Log>>>,
     pub dir: PathBuf,
+    pub port: u16,
+}
+
+// The one way out, whoever asked. The log is flushed before the url file goes, because
+// a file somebody else is holding open cannot be removed on Windows and that must not
+// cost us the tail of the log.
+pub fn shutdown(ctx: &Ctx, why: &str) -> ! {
+    if let Ok(mut l) = ctx.log.lock() {
+        if let Some(l) = l.as_mut() {
+            l.flush();
+        }
+    }
+    if let Some(w) = urlfile::remove(&ctx.dir) {
+        println!("{}", w);
+    }
+    println!("{}", why);
+    std::process::exit(0);
 }
 
 pub fn serve(server: Server, ctx: Arc<Ctx>) {
@@ -149,6 +241,45 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
         }
         let _ = request.respond(Response::from_string("not a websocket request").with_status_code(400));
         return;
+    }
+
+    // What a launcher polls until the app is up, and the one place it can read the
+    // version it is talking to.
+    if path == "/api/health" {
+        let (boards, receivers) = match ctx.hub.lock() {
+            Ok(h) => (h.boards().len(), h.ports().len()),
+            Err(_) => (0, 0),
+        };
+        let log = ctx
+            .log
+            .lock()
+            .ok()
+            .and_then(|l| l.as_ref().map(|l| l.path().display().to_string()));
+        let body = health_json(env!("CARGO_PKG_VERSION"), ctx.port, log.as_deref(), boards, receivers);
+        let _ = request.respond(
+            Response::from_string(body).with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    // How a launcher stops us without keeping a pid. Only reachable from this machine,
+    // because the listener is bound to 127.0.0.1.
+    if path == "/api/quit" {
+        if request.method().as_str() != "POST" {
+            let _ = request.respond(
+                Response::from_string("{\"ok\":false,\"error\":\"POST only\"}")
+                    .with_status_code(405)
+                    .with_header(header("Content-Type", "application/json")),
+            );
+            return;
+        }
+        let _ = request.respond(
+            Response::from_string("{\"ok\":true}").with_header(header("Content-Type", "application/json")),
+        );
+        // respond() has written the answer, but the other end still has to read it off
+        // the socket before we close everything by leaving.
+        std::thread::sleep(Duration::from_millis(100));
+        shutdown(&ctx, "stopping: asked to over /api/quit");
     }
 
     if path == "/api/ports" {
@@ -412,6 +543,21 @@ mod tests {
         }];
         let json = ports_json(&ports, &boards, Some("/tmp/a.log"));
         assert_eq!(json, "{\"ports\":[{\"key\":\"rx1\",\"port\":\"/dev/ttyUSB0\",\"usb\":\"10c4:ea60\",\"status\":\"open\",\"error\":null}],\"boards\":[{\"port\":\"/dev/ttyACM0\",\"usb\":\"1a86:55d4\",\"label\":\"CH9102\",\"serial\":\"58A1\",\"state\":\"waiting\",\"name\":\"Left T-Beam\"}],\"log\":\"/tmp/a.log\"}");
+    }
+
+    #[test]
+    fn health_is_shaped_the_way_a_launcher_reads_it() {
+        assert_eq!(
+            health_json("0.4.0", 8790, Some("/tmp/a.log"), 2, 1),
+            "{\"ok\":true,\"version\":\"0.4.0\",\"port\":8790,\"log\":\"/tmp/a.log\",\"boards\":2,\"receivers\":1}"
+        );
+        assert_eq!(
+            health_json("0.4.0", 8765, None, 0, 0),
+            "{\"ok\":true,\"version\":\"0.4.0\",\"port\":8765,\"log\":null,\"boards\":0,\"receivers\":0}"
+        );
+        // The version is the crate's, not a string typed twice.
+        assert!(health_json(env!("CARGO_PKG_VERSION"), 1, None, 0, 0)
+            .contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]

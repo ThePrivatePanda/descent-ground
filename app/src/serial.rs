@@ -24,6 +24,18 @@ pub fn board_key(vid: u16, pid: u16, serial: Option<&str>) -> String {
     format!("{:04x}:{:04x}:{}", vid, pid, serial.unwrap_or("-"))
 }
 
+// An ST-Link's USB serial is raw bytes rather than text and arrives as mojibake, which
+// is useless for telling two identical probes apart on a bench. Anything that is not
+// printable is shown as hex instead, which is the form OpenOCD and the flight tools
+// use. Caveat: if the OS already replaced bad bytes on its way to us, this is the hex
+// of what we were given, not of what the descriptor holds.
+pub fn readable_serial(serial: &str) -> String {
+    if serial.is_empty() || serial.chars().all(|c| c.is_ascii_graphic()) {
+        return serial.to_string();
+    }
+    serial.bytes().map(|b| format!("{:02X}", b)).collect()
+}
+
 // Said out loud in the list so nobody has to recognise a hex id.
 pub fn bridge_name(vid: u16, pid: u16) -> &'static str {
     match (vid, pid) {
@@ -418,7 +430,7 @@ impl Hub {
                 _ => continue,   // a built-in ttyS is never one of ours
             };
             present.insert(p.port_name.clone());
-            let serial = u.serial_number.clone().unwrap_or_default();
+            let serial = readable_serial(&u.serial_number.clone().unwrap_or_default());
             let key = board_key(u.vid, u.pid, u.serial_number.as_deref());
             let usb = format!("{:04x}:{:04x}", u.vid, u.pid);
             let label = bridge_name(u.vid, u.pid).to_string();
@@ -671,6 +683,15 @@ mod tests {
         // A different chip is a different board, whatever port it lands on.
         assert_ne!(a, board_key(0x1a86, 0x55d4, Some("0001")));
         assert_eq!(board_key(0x1a86, 0x55d4, None), "1a86:55d4:-");
+    }
+
+    #[test]
+    fn a_serial_that_is_not_text_is_shown_as_hex() {
+        assert_eq!(readable_serial("0001"), "0001");
+        assert_eq!(readable_serial(""), "");
+        // An ST-Link style descriptor: raw bytes, unreadable as text.
+        assert_eq!(readable_serial("\u{1}\u{2}"), "0102");
+        assert_ne!(readable_serial("2\u{fffd}o\u{6}"), "2\u{fffd}o\u{6}");
     }
 
     #[test]
