@@ -112,23 +112,68 @@
     ignored: 'left alone',
   };
 
+  // Which physical board is /dev/ttyUSB0? Nobody can answer that from a port name, so
+  // the app watches for one to be unplugged and plugged back in, and you name that one.
+  const ident = { watching: false, found: null, left: 0, timer: null };
+
+  function identBanner() {
+    if (ident.found) {
+      return '<div class="ident found"><b>' + esc(ident.found) + '</b> is the one you just replugged. ' +
+        'Give it a name below.</div>';
+    }
+    if (ident.watching) {
+      return '<div class="ident"><b>Unplug the board you want to name, then plug it back in.</b> ' +
+        'Waiting ' + ident.left + ' s. Nothing is opened while it watches.</div>';
+    }
+    return '';
+  }
+
+  function boardRow(b) {
+    const is = b.state === 'receiver';
+    const mine = ident.found === b.port;
+    const buttons = is
+      ? '<button data-not="' + esc(b.port) + '">Not a receiver</button>'
+      : '<button data-yes="' + esc(b.port) + '" class="primary">This is a receiver</button>' +
+        (b.state === 'ignored' ? '' : '<button data-not="' + esc(b.port) + '">Leave it alone</button>');
+    const title = b.name ? esc(b.name) : esc(b.port);
+    return '<div class="setup-row' + (mine ? ' found' : '') + '">' +
+      '<div><b>' + title + '</b><span class="note">' + (b.name ? ' — ' + esc(b.port) : '') +
+        ' — ' + esc(b.label) + ', USB ' + esc(b.usb) + (b.serial ? ', serial ' + esc(b.serial) : '') +
+        ' — ' + esc(STATE_WORDS[b.state] || b.state) + '</span></div>' +
+      '<div class="setup-actions">' +
+        '<input class="nameit" data-name="' + esc(b.port) + '" value="' + esc(b.name || '') +
+          '" placeholder="call it something" maxlength="40">' +
+        '<button data-test="' + esc(b.port) + '" title="Open it for five seconds and show what it says. This can reset the board.">Test</button>' +
+        buttons + '</div>' +
+      (b.testResult ? '<pre class="testout">' + esc(b.testResult) + '</pre>' : '') +
+      '</div>';
+  }
+
   function renderBoards() {
     const boards = hub.boards || [];
-    if (!boards.length) return '<p class="note">Nothing plugged in.</p>';
-    return '<h3>Boards</h3><p class="note">The app opens a board only once you say it is a receiver, ' +
+    const head = '<h3>Boards</h3><p class="note">The app opens a board only once you say it is a receiver, ' +
       'because opening a port can reset the board on the other end. It remembers the board, not the ' +
       'socket, so a replug needs no second answer.</p>' +
-      boards.map((b) => {
-        const is = b.state === 'receiver';
-        const buttons = is
-          ? '<button data-not="' + esc(b.port) + '">Not a receiver</button>'
-          : '<button data-yes="' + esc(b.port) + '" class="primary">This is a receiver</button>' +
-            (b.state === 'ignored' ? '' : '<button data-not="' + esc(b.port) + '">Leave it alone</button>');
-        return '<div class="setup-row"><div><b>' + esc(b.port) + '</b><span class="note"> — ' +
-          esc(b.label) + ', USB ' + esc(b.usb) + (b.serial ? ', serial ' + esc(b.serial) : '') +
-          ' — ' + esc(STATE_WORDS[b.state] || b.state) + '</span></div>' +
-          '<div class="setup-actions">' + buttons + '</div></div>';
-      }).join('');
+      '<div class="setup-actions"><button id="btn-ident"' + (ident.watching ? ' disabled' : '') + '>' +
+      (ident.watching ? 'Watching…' : 'Which board is which?') + '</button></div>' + identBanner();
+    if (!boards.length) return head + '<p class="note">Nothing plugged in.</p>';
+    return head + boards.map(boardRow).join('');
+  }
+
+  async function pollIdentify() {
+    let st;
+    try { st = await hub.identifyState(); } catch (e) { return; }
+    ident.watching = !!st.watching;
+    ident.left = st.seconds_left || 0;
+    if (st.found) {
+      ident.found = st.found;
+      ident.watching = false;
+      clearInterval(ident.timer); ident.timer = null;
+      toast(st.found + ' is the board you replugged');
+    } else if (!st.watching) {
+      clearInterval(ident.timer); ident.timer = null;
+    }
+    renderSetup();
   }
 
   function renderSetup() {
@@ -189,7 +234,19 @@
   });
   $('setup-close').addEventListener('click', () => { $('setup').hidden = true; hub.onFlash = null; });
 
-  $('setup-body').addEventListener('change', (e) => {
+  $('setup-body').addEventListener('change', async (e) => {
+    const named = e.target.getAttribute('data-name');
+    if (named) {
+      try {
+        const clean = await hub.setName(named, e.target.value);
+        toast(clean ? 'Called it ' + clean : 'Name cleared');
+        if (ident.found === named) ident.found = null;
+        renderSetup();
+      } catch (err) {
+        toast('Could not name it: ' + (err.message || err));
+      }
+      return;
+    }
     const port = e.target.getAttribute('data-sf');
     if (!port) return;
     const row = setup.rows.find((r) => r.port === port);
@@ -197,6 +254,30 @@
   });
 
   $('setup-body').addEventListener('click', async (e) => {
+    if (e.target.id === 'btn-ident') {
+      ident.found = null;
+      await hub.identifyStart();
+      ident.watching = true; ident.left = 60;
+      clearInterval(ident.timer);
+      ident.timer = setInterval(pollIdentify, 1000);
+      renderSetup();
+      return;
+    }
+    const test = e.target.getAttribute('data-test');
+    if (test) {
+      const b = (hub.boards || []).find((x) => x.port === test);
+      if (b) { b.testResult = 'listening for five seconds…'; renderSetup(); }
+      try {
+        const j = await hub.testPort(test);
+        const what = { 'descent-receiver': 'a DeSCENT receiver', 'csv-receiver': 'an old CSV receiver',
+          'something-else': 'something, but not a receiver', silent: 'nothing at all' }[j.looks_like] || j.looks_like;
+        if (b) b.testResult = 'Heard ' + what + (j.lines.length ? ':\n' + j.lines.slice(0, 6).join('\n') : '');
+      } catch (err) {
+        if (b) b.testResult = 'Could not listen: ' + (err.message || err);
+      }
+      renderSetup();
+      return;
+    }
     const yes = e.target.getAttribute('data-yes');
     const not = e.target.getAttribute('data-not');
     if (yes || not) {
@@ -331,6 +412,33 @@
     if (!events.length) { toast('No lines found in ' + files.map((f) => f.name).join(', ')); return; }
     startReplay(events, files.map((f) => f.name));
   });
+
+  // ?log=<url> replays a file without anyone clicking Open log, so pulling a chip can
+  // be one command that ends with the dashboard already showing it. Repeatable:
+  // ?log=a&log=b merges them the way opening both files does.
+  async function openFromUrl() {
+    const urls = new URLSearchParams(location.search).getAll('log');
+    if (!urls.length) return;
+    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    const parsed = [];
+    const names = [];
+    for (const u of urls) {
+      try {
+        const r = await fetch(u);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const name = (u.split('?')[0].split(/[\\/]/).pop()) || 'log';
+        parsed.push(R.parseLogFile(await r.text(), name, midnight.getTime()));
+        names.push(name);
+      } catch (err) {
+        // A bad link leaves a working dashboard and says why, rather than a blank page.
+        toast('Could not open ' + u + ': ' + (err.message || err));
+      }
+    }
+    const events = R.mergeFiles(parsed);
+    if (!events.length) return;
+    startReplay(events, names);
+  }
+  openFromUrl();
 
   function startReplay(events, names) {
     stopPlay();
@@ -754,17 +862,19 @@
       const what = src.kind === 'flash' ? 'Flash dump' : (src.kind || 'Not a radio');
       const bits = [src.from, src.boot ? 'boot ' + src.boot : '', src.packets ? src.packets + ' records' : '']
         .filter(Boolean).join(', ');
-      // A boot with no GPS anchor was placed on the clock by hand. Once it is epoch
-      // milliseconds it looks exactly like a real one, so it has to say so.
-      const guessed = src.time_source === 'start';
-      const when = guessed ? '\nTimes were set by hand, not from GPS. The time axis is a guess.'
+      // Anything not anchored to GPS is a derived time, however it was derived, and
+      // once it is epoch milliseconds it looks exactly like a real one. Tested the
+      // other way round on purpose: a new kind of derived time must not slip through
+      // by not being on a list.
+      const guessed = !!src.time_source && src.time_source !== 'anchor';
+      const when = guessed ? '\nTimes are not from GPS (' + src.time_source + '), so the time axis is derived.'
         : (src.anchor_utc ? '\nTime anchored at ' + src.anchor_utc +
             (src.anchor_tacc_ns ? ' (receiver accuracy ' + src.anchor_tacc_ns + ' ns)' : '') : '');
       $('receivers').insertAdjacentHTML('beforeend', '<span class="rx" title="' +
         esc('No RSSI or SNR: these lines came off a chip, not a radio.' + when) +
         '"><span class="name">' + esc(rx) + '</span><span class="st warning">' + esc(what) + '</span>' +
         (bits ? '<span class="meta">' + esc(bits) + '</span>' : '') +
-        (guessed ? '<span class="st serious">times set by hand</span>' : '') + '</span>');
+        (guessed ? '<span class="st serious">times not from GPS</span>' : '') + '</span>');
     }
     offerSetupOnce();
     renderClear();

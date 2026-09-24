@@ -129,6 +129,36 @@
       return j;
     }
 
+    // json.rs reads a string up to the first quote and does not unescape, so a quote or
+    // a backslash would arrive truncated. Take them out here rather than corrupt the file.
+    async setName(port, name) {
+      const clean = String(name).replace(/["\\\r\n]/g, '').trim().slice(0, 40);
+      const r = await fetch('/api/board/name', { method: 'POST', body: JSON.stringify({ port, name: clean }) });
+      const j = await r.json().catch(() => ({ ok: false }));
+      if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
+      await this.refresh();
+      return clean;
+    }
+
+    // Nothing is opened for this: the app watches which port disappears and comes back.
+    async identifyStart() {
+      const r = await fetch('/api/board/identify', { method: 'POST' });
+      return r.json();
+    }
+
+    async identifyState() {
+      const r = await fetch('/api/board/identify');
+      return r.json();
+    }
+
+    // Opens the port and listens without writing to it. Five seconds.
+    async testPort(port) {
+      const r = await fetch('/api/board/test', { method: 'POST', body: JSON.stringify({ port }) });
+      const j = await r.json().catch(() => ({ ok: false }));
+      if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
+      return j;
+    }
+
     async rotateLog() {
       const r = await fetch('/api/log/rotate', { method: 'POST' });
       const j = await r.json().catch(() => ({ ok: false }));

@@ -100,3 +100,16 @@ test('a boot dated by hand is distinguishable from one dated by GPS', () => {
   assert.equal(byGps.info.time_source, 'anchor');
   assert.equal(byGps.info.anchor_tacc_ns, '25');
 });
+
+test('any time source that is not GPS counts as derived', () => {
+  // Tested as "not anchor" rather than against a list, so a new kind added on the
+  // flight side cannot quietly present itself as measured time.
+  const derived = (v) => {
+    const info = L.parseLine('#DG,SRC,v1,kind=flash,time_source=' + v).info;
+    return !!info.time_source && info.time_source !== 'anchor';
+  };
+  assert.equal(derived('anchor'), false);
+  assert.equal(derived('start'), true);
+  assert.equal(derived('dump'), true);
+  assert.equal(derived('something-invented-later'), true);
+});

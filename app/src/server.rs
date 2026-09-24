@@ -1,9 +1,10 @@
 // The dashboard, and the few calls it makes back. Bound to 127.0.0.1 only: this is
 // the operator's own laptop, not a service.
 use crate::json::{esc, int_field};
+use crate::logfile::Log;
 use crate::serial::{Board, Hub, PortInfo};
 use crate::ws::{Broadcast, Socket};
-use crate::{assets, flash};
+use crate::{assets, flash, logfile};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Request, Response, Server};
@@ -36,12 +37,13 @@ pub fn ports_json(ports: &[PortInfo], boards: &[Board], log: Option<&str>) -> St
         .iter()
         .map(|b| {
             format!(
-                "{{\"port\":\"{}\",\"usb\":\"{}\",\"label\":\"{}\",\"serial\":\"{}\",\"state\":\"{}\"}}",
+                "{{\"port\":\"{}\",\"usb\":\"{}\",\"label\":\"{}\",\"serial\":\"{}\",\"state\":\"{}\",\"name\":\"{}\"}}",
                 esc(&b.port),
                 esc(&b.usb),
                 esc(&b.label),
                 esc(&b.serial),
-                esc(&b.state)
+                esc(&b.state),
+                esc(&b.name)
             )
         })
         .collect();
@@ -103,7 +105,7 @@ fn ours_is_listening(port: u16) -> bool {
 pub struct Ctx {
     pub hub: Arc<Mutex<Hub>>,
     pub broadcast: Broadcast,
-    pub log: Option<PathBuf>,
+    pub log: Arc<Mutex<Option<Log>>>,
     pub dir: PathBuf,
 }
 
@@ -154,7 +156,13 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
             Ok(h) => (h.ports(), h.boards()),
             Err(_) => (Vec::new(), Vec::new()),
         };
-        let body = ports_json(&ports, &boards, ctx.log.as_ref().and_then(|p| p.to_str()));
+        // Asked of the log itself rather than remembered, so a rotation shows up here.
+        let log = ctx
+            .log
+            .lock()
+            .ok()
+            .and_then(|l| l.as_ref().map(|l| l.path().display().to_string()));
+        let body = ports_json(&ports, &boards, log.as_deref());
         let _ = request.respond(
             Response::from_string(body).with_header(header("Content-Type", "application/json")),
         );
@@ -213,6 +221,117 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
                 }
             }
             None => String::from("{\"ok\":false,\"error\":\"no port in the request\"}"),
+        };
+        let _ = request.respond(
+            Response::from_string(text).with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    // A name the operator can read, against the board and not the port. An empty name
+    // clears it.
+    if path == "/api/board/name" {
+        let mut body = String::new();
+        let _ = std::io::Read::read_to_string(&mut request.as_reader(), &mut body);
+        let text = match (crate::json::str_field(&body, "port"), crate::json::str_field(&body, "name")) {
+            (Some(p), Some(name)) => {
+                match ctx.hub.lock().unwrap().set_name(&p, &name) {
+                    Ok(()) => {
+                        println!("{} is {}", p, if name.trim().is_empty() { "nameless again" } else { name.trim() });
+                        String::from("{\"ok\":true}")
+                    }
+                    Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e)),
+                }
+            }
+            (None, _) => String::from("{\"ok\":false,\"error\":\"no port in the request\"}"),
+            (_, None) => String::from("{\"ok\":false,\"error\":\"no name in the request\"}"),
+        };
+        let _ = request.respond(
+            Response::from_string(text).with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    // Which board is which, without touching any of them: the operator unplugs the one
+    // they mean and plugs it back in, and discovery sees it go and come back. POST
+    // starts a watch, GET asks how it is going, and both answer the same shape.
+    if path == "/api/board/identify" {
+        let start = request.method().as_str() == "POST";
+        let (watching, found, left) = {
+            let mut hub = ctx.hub.lock().unwrap();
+            if start {
+                hub.identify_start();
+                println!("identify: unplug the board you mean, then plug it back in");
+            }
+            hub.identify_state()
+        };
+        let body = format!(
+            "{{\"watching\":{},\"found\":{},\"seconds_left\":{}}}",
+            watching,
+            match &found {
+                Some(p) => format!("\"{}\"", esc(p)),
+                None => String::from("null"),
+            },
+            left
+        );
+        let _ = request.respond(
+            Response::from_string(body).with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    // Five seconds of listening to an unknown board. Nothing is sent to it, not even
+    // #GET: this is the call for a board nobody has vouched for yet. It blocks for
+    // those five seconds, which is fine because every request has its own thread.
+    if path == "/api/board/test" {
+        let mut body = String::new();
+        let _ = std::io::Read::read_to_string(&mut request.as_reader(), &mut body);
+        let text = match crate::json::str_field(&body, "port") {
+            None => String::from("{\"ok\":false,\"error\":\"no port in the request\"}"),
+            Some(p) => {
+                // The hub lock is let go before the read, or poll() stops for five seconds.
+                let held = ctx.hub.lock().unwrap().begin_probe(&p);
+                match held {
+                    Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e)),
+                    Ok(()) => {
+                        let heard = crate::serial::probe(&p);
+                        ctx.hub.lock().unwrap().end_probe(&p);
+                        match heard {
+                            Ok((lines, bytes)) => {
+                                // Judged on everything it said, shown a readable slice of it.
+                                let what = crate::serial::looks_like(&lines, bytes);
+                                println!("{} sounds like {} ({} lines)", p, what, lines.len());
+                                let items: Vec<String> = lines
+                                    .iter()
+                                    .take(crate::serial::PROBE_LINES)
+                                    .map(|l| format!("\"{}\"", esc(&crate::serial::clip(l, crate::serial::PROBE_CHARS))))
+                                    .collect();
+                                format!(
+                                    "{{\"ok\":true,\"lines\":[{}],\"looks_like\":\"{}\"}}",
+                                    items.join(","),
+                                    what
+                                )
+                            }
+                            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e)),
+                        }
+                    }
+                }
+            }
+        };
+        let _ = request.respond(
+            Response::from_string(text).with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    // Start a new log without restarting the app, for a second drop on the same day.
+    if path == "/api/log/rotate" {
+        let text = match logfile::rotate(&ctx.log, &ctx.dir) {
+            Ok(p) => {
+                println!("logging every line to {}", p.display());
+                format!("{{\"ok\":true,\"log\":\"{}\"}}", esc(&p.to_string_lossy()))
+            }
+            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e)),
         };
         let _ = request.respond(
             Response::from_string(text).with_header(header("Content-Type", "application/json")),
@@ -289,9 +408,10 @@ mod tests {
             serial: "58A1".into(),
             key: "1a86:55d4:58A1".into(),
             state: "waiting".into(),
+            name: "Left T-Beam".into(),
         }];
         let json = ports_json(&ports, &boards, Some("/tmp/a.log"));
-        assert_eq!(json, "{\"ports\":[{\"key\":\"rx1\",\"port\":\"/dev/ttyUSB0\",\"usb\":\"10c4:ea60\",\"status\":\"open\",\"error\":null}],\"boards\":[{\"port\":\"/dev/ttyACM0\",\"usb\":\"1a86:55d4\",\"label\":\"CH9102\",\"serial\":\"58A1\",\"state\":\"waiting\"}],\"log\":\"/tmp/a.log\"}");
+        assert_eq!(json, "{\"ports\":[{\"key\":\"rx1\",\"port\":\"/dev/ttyUSB0\",\"usb\":\"10c4:ea60\",\"status\":\"open\",\"error\":null}],\"boards\":[{\"port\":\"/dev/ttyACM0\",\"usb\":\"1a86:55d4\",\"label\":\"CH9102\",\"serial\":\"58A1\",\"state\":\"waiting\",\"name\":\"Left T-Beam\"}],\"log\":\"/tmp/a.log\"}");
     }
 
     #[test]

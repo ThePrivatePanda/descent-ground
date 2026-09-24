@@ -52,6 +52,7 @@ pub struct Board {
     pub serial: String,
     pub key: String,
     pub state: String,
+    pub name: String,   // what the operator calls it, empty until they say
 }
 
 #[derive(Clone)]
@@ -61,6 +62,55 @@ pub struct PortInfo {
     pub usb: String,
     pub status: String,
     pub error: Option<String>,
+}
+
+// The one thing that tells an unmarked board from its neighbour without opening it:
+// the operator unplugs the one they mean and plugs it back in. A port that vanishes
+// and then a port that appears carrying a key we just lost is that board. Ports are
+// tracked rather than keys alone because two CP2102s can share a key, and a replug
+// often lands on a different /dev/ttyUSBn.
+const IDENTIFY_MS: u128 = 60_000;
+
+pub struct Identify {
+    started_ms: u128,
+    last: Vec<(String, String)>,   // (board key, port) at the previous look
+    gone: Vec<(String, String)>,   // pairs that have disappeared since the watch began
+    found: Option<String>,
+}
+
+impl Identify {
+    fn start(now_ms: u128, present: &[(String, String)]) -> Self {
+        Identify { started_ms: now_ms, last: present.to_vec(), gone: Vec::new(), found: None }
+    }
+
+    fn step(&mut self, now_ms: u128, present: &[(String, String)]) {
+        if self.found.is_some() || self.expired(now_ms) {
+            return;
+        }
+        for (k, p) in &self.last {
+            if !present.iter().any(|(_, q)| q == p) && !self.gone.iter().any(|(_, q)| q == p) {
+                self.gone.push((k.clone(), p.clone()));
+            }
+        }
+        for (k, p) in present {
+            let back = !self.last.iter().any(|(_, q)| q == p)
+                && self.gone.iter().any(|(j, _)| j == k);
+            if back {
+                self.found = Some(p.clone());
+                break;
+            }
+        }
+        self.last = present.to_vec();
+    }
+
+    fn expired(&self, now_ms: u128) -> bool {
+        now_ms.saturating_sub(self.started_ms) >= IDENTIFY_MS
+    }
+
+    fn seconds_left(&self, now_ms: u128) -> u64 {
+        let gone = now_ms.saturating_sub(self.started_ms);
+        ((IDENTIFY_MS.saturating_sub(gone) + 999) / 1000) as u64
+    }
 }
 
 // Keys are handed out in discovery order and stay with a device path, so rx1 is
@@ -105,6 +155,9 @@ pub struct Hub {
     approved: HashSet<String>,     // board keys the operator said are receivers
     ignored: HashSet<String>,      // board keys to leave alone for good
     dismissed: HashSet<String>,    // device paths disconnected by hand, until replug
+    probing: HashSet<String>,      // device paths a five-second listen owns
+    names: HashMap<String, String>,   // board key -> what the operator calls it
+    identify: Option<Identify>,
     boards: Vec<Board>,            // every USB serial port and what we do about it
     store: Option<std::path::PathBuf>,
 }
@@ -120,6 +173,9 @@ impl Hub {
             approved: HashSet::new(),
             ignored: HashSet::new(),
             dismissed: HashSet::new(),
+            probing: HashSet::new(),
+            names: HashMap::new(),
+            identify: None,
             boards: Vec::new(),
             store: None,
         }
@@ -138,6 +194,15 @@ impl Hub {
                 match line.split_once(' ') {
                     Some(("receiver", k)) => { self.approved.insert(k.trim().to_string()); }
                     Some(("ignore", k)) => { self.ignored.insert(k.trim().to_string()); }
+                    // name <key> <whatever the operator typed>, spaces and all
+                    Some(("name", rest)) => {
+                        if let Some((k, n)) = rest.trim_start().split_once(' ') {
+                            let n = n.trim();
+                            if !n.is_empty() {
+                                self.names.insert(k.to_string(), n.to_string());
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -147,12 +212,14 @@ impl Hub {
 
     fn save(&self) {
         let Some(f) = &self.store else { return };
-        let mut text = String::from("# what DeSCENT Ground may open. One board per line.\n");
+        let mut text = String::from("# what DeSCENT Ground may open, and what each board is called.\n");
+        text.push_str("# one per line: receiver <board>, ignore <board>, name <board> <what you call it>\n");
         let mut rows: Vec<String> = self
             .approved
             .iter()
             .map(|k| format!("receiver {}", k))
             .chain(self.ignored.iter().map(|k| format!("ignore {}", k)))
+            .chain(self.names.iter().map(|(k, n)| format!("name {} {}", k, n)))
             .collect();
         rows.sort();
         for r in rows {
@@ -190,6 +257,71 @@ impl Hub {
         self.save();
         let _ = self.tx.send(Event::Ports);
         Ok(())
+    }
+
+    // What the operator calls this board. Against the board, like the approvals, so a
+    // replug or another socket keeps the name. An empty name clears it. The settings
+    // file is one board per line, so a name cannot carry a newline.
+    pub fn set_name(&mut self, port: &str, name: &str) -> Result<(), String> {
+        let key = self.key_of_port(port).ok_or_else(|| format!("{} is not plugged in", port))?;
+        if name.contains('\n') || name.contains('\r') {
+            return Err(String::from("a name has to fit on one line"));
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            self.names.remove(&key);
+        } else {
+            self.names.insert(key, name.to_string());
+        }
+        self.save();
+        let _ = self.tx.send(Event::Ports);
+        Ok(())
+    }
+
+    // Start watching for a replug. A second call restarts it and forgets the last answer.
+    pub fn identify_start(&mut self) {
+        let present: Vec<(String, String)> =
+            self.boards.iter().map(|b| (b.key.clone(), b.port.clone())).collect();
+        self.identify = Some(Identify::start(now_ms(), &present));
+    }
+
+    // watching, the port that came back, seconds left. An expired watch reads the same
+    // as no watch at all; a found one stops the clock and keeps its answer until the
+    // next start.
+    pub fn identify_state(&self) -> (bool, Option<String>, u64) {
+        let Some(w) = &self.identify else { return (false, None, 0) };
+        let now = now_ms();
+        if let Some(p) = &w.found {
+            return (false, Some(p.clone()), 0);
+        }
+        if w.expired(now) {
+            return (false, None, 0);
+        }
+        (true, None, w.seconds_left(now))
+    }
+
+    // A five-second listen is not ownership, but poll() and the flasher have to keep
+    // off the port while it lasts, and anything already using it says no.
+    pub fn begin_probe(&mut self, port: &str) -> Result<(), String> {
+        if self.key_of_port(port).is_none() {
+            return Err(format!("{} is not plugged in", port));
+        }
+        if self.probing.contains(port) {
+            return Err(format!("{} is already being listened to", port));
+        }
+        if self.flashing.contains(port) {
+            return Err(format!("{} is being flashed", port));
+        }
+        if self.open.values().any(|o| o.port == port) {
+            return Err(format!("{} is open as a receiver — disconnect it there first", port));
+        }
+        self.probing.insert(port.to_string());
+        Ok(())
+    }
+
+    pub fn end_probe(&mut self, port: &str) {
+        self.probing.remove(port);
+        let _ = self.tx.send(Event::Ports);
     }
 
     pub fn boards(&self) -> Vec<Board> {
@@ -249,6 +381,9 @@ impl Hub {
         if self.flashing.contains(port) {
             return Err(format!("{} is already being flashed", port));
         }
+        if self.probing.contains(port) {
+            return Err(format!("{} is being listened to, so wait for that to finish", port));
+        }
         self.flashing.insert(port.to_string());
         let key = self.open.iter().find(|(_, o)| o.port == port).map(|(k, _)| k.clone());
         if let Some(k) = key {
@@ -298,6 +433,7 @@ impl Hub {
             } else {
                 "waiting"
             };
+            let name = self.names.get(&key).cloned().unwrap_or_default();
             boards.push(Board {
                 port: p.port_name.clone(),
                 usb: usb.clone(),
@@ -305,9 +441,13 @@ impl Hub {
                 serial,
                 key,
                 state: state.to_string(),
+                name,
             });
 
-            if state != "receiver" || self.flashing.contains(&p.port_name) {
+            if state != "receiver"
+                || self.flashing.contains(&p.port_name)
+                || self.probing.contains(&p.port_name)
+            {
                 continue;
             }
 
@@ -341,6 +481,19 @@ impl Hub {
         // Unplugging a board clears a by-hand disconnect, so plugging it back in
         // brings it back the way anyone would expect.
         self.dismissed.retain(|p| present.contains(p));
+
+        // The replug watch runs off this same pass, so nothing has to be opened for it.
+        // A board unplugged and back inside one 2 s pass is missed, which is why the
+        // page asks for a deliberate unplug rather than a tap.
+        if let Some(w) = self.identify.as_mut() {
+            let now = now_ms();
+            let pairs: Vec<(String, String)> =
+                boards.iter().map(|b| (b.key.clone(), b.port.clone())).collect();
+            w.step(now, &pairs);
+            if w.found.is_none() && w.expired(now) {
+                self.identify = None;
+            }
+        }
         self.boards = boards;
 
         let gone: Vec<String> = self.open.keys().filter(|k| !seen.contains(k)).cloned().collect();
@@ -438,6 +591,73 @@ impl Hub {
     }
 }
 
+const PROBE_SECS: u64 = 5;
+pub const PROBE_LINES: usize = 20;
+pub const PROBE_CHARS: usize = 200;
+
+// Listen to a board for five seconds and say nothing to it. Opening the port still
+// pulses DTR, so an ESP32 on the other end probably reboots; that is the price of
+// finding out what an unmarked board is, and it is less than sending #GET to
+// something that might be a ChipSat. Returns every whole line and how many bytes
+// arrived: a board can talk without ever finishing a line, and the shortening for the
+// page happens after the lines have been read, not before, or a 35-field CSV row
+// loses the fields that identify it.
+pub fn probe(port: &str) -> Result<(Vec<String>, usize), String> {
+    let mut p = serialport::new(port, BAUD)
+        .timeout(Duration::from_millis(200))
+        .open()
+        .map_err(|e| format!("{}: {}", port, e))?;
+    let mut framer = Framer::new();
+    let mut buf = [0u8; 4096];
+    let mut lines: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    let until = std::time::Instant::now() + Duration::from_secs(PROBE_SECS);
+    while std::time::Instant::now() < until {
+        match p.read(&mut buf) {
+            Ok(0) => {}
+            Ok(n) => {
+                bytes += n;
+                for line in framer.push(&buf[..n]) {
+                    lines.push(line);
+                }
+            }
+            Err(ref e) if e.kind() == ErrorKind::TimedOut => {}
+            Err(e) => return Err(format!("{}: {}", port, e)),
+        }
+    }
+    Ok((lines, bytes))
+}
+
+pub fn clip(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => s[..i].to_string(),
+        None => s.to_string(),
+    }
+}
+
+// What a board sounds like, from what it said and nothing else. A receiver of ours
+// announces itself with #DG,RX and then sends PKT and HB lines. The older CSV
+// receiver writes a header row and then 35 fields a line. Bytes that match neither
+// are still bytes, so they are not silence.
+pub fn looks_like(lines: &[String], bytes: usize) -> &'static str {
+    if bytes == 0 {
+        return "silent";
+    }
+    let ours = lines.iter().any(|l| {
+        l.starts_with("#DG,RX") || l.starts_with("PKT,") || l.starts_with("HB,")
+    });
+    if ours {
+        return "descent-receiver";
+    }
+    let csv = lines
+        .iter()
+        .any(|l| l.starts_with("Latitude_deg,") || l.split(',').count() == 35);
+    if csv {
+        return "csv-receiver";
+    }
+    "something-else"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,7 +688,170 @@ mod tests {
             serial: "x".into(),
             key: key.into(),
             state: state.into(),
+            name: String::new(),
         }
+    }
+
+    fn scratch(what: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dg-{}-{}", what, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn reloaded(dir: &std::path::Path) -> Hub {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut hub = Hub::new(tx);
+        hub.remember_in(dir);
+        hub
+    }
+
+    #[test]
+    fn a_name_with_spaces_survives_being_saved_and_read_back() {
+        let dir = scratch("names");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut hub = Hub::new(tx);
+        hub.remember_in(&dir);
+        hub.boards = vec![board_at("/dev/ttyACM1", "1a86:55d4:x", "waiting")];
+        hub.approve("/dev/ttyACM1").unwrap();
+        hub.set_name("/dev/ttyACM1", " Left T-Beam ").unwrap();
+
+        let again = reloaded(&dir);
+        assert_eq!(again.names.get("1a86:55d4:x").map(String::as_str), Some("Left T-Beam"));
+        assert!(again.approved.contains("1a86:55d4:x"));   // the old lines still load
+
+        // An empty name clears it, and nothing brings it back.
+        hub.set_name("/dev/ttyACM1", "").unwrap();
+        assert!(reloaded(&dir).names.is_empty());
+
+        assert!(hub.set_name("/dev/ttyACM1", "two\nlines").unwrap_err().contains("one line"));
+        assert!(hub.set_name("/dev/ttyUSB9", "nope").unwrap_err().contains("not plugged in"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_settings_file_from_before_names_still_loads() {
+        let dir = scratch("oldfile");
+        std::fs::write(
+            dir.join("descent-ground-boards.txt"),
+            "# what DeSCENT Ground may open. One board per line.\nreceiver 10c4:ea60:0001\nignore 1a86:7523:-\n",
+        )
+        .unwrap();
+        let hub = reloaded(&dir);
+        assert!(hub.approved.contains("10c4:ea60:0001"));
+        assert!(hub.ignored.contains("1a86:7523:-"));
+        assert!(hub.names.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter().map(|(k, p)| (k.to_string(), p.to_string())).collect()
+    }
+
+    const T0: u128 = 1_790_000_000_000;
+
+    #[test]
+    fn the_board_that_goes_away_and_comes_back_is_the_one_the_operator_meant() {
+        let mut w = Identify::start(T0, &pairs(&[("a", "/dev/ttyUSB0"), ("b", "/dev/ttyUSB1")]));
+        w.step(T0 + 2_000, &pairs(&[("b", "/dev/ttyUSB1")]));
+        assert_eq!(w.found, None);
+        // Back on another socket, which is the usual way a replug comes back.
+        w.step(T0 + 4_000, &pairs(&[("a", "/dev/ttyUSB2"), ("b", "/dev/ttyUSB1")]));
+        assert_eq!(w.found.as_deref(), Some("/dev/ttyUSB2"));
+        // A later board coming back does not overwrite the first answer.
+        w.step(T0 + 6_000, &pairs(&[("a", "/dev/ttyUSB2")]));
+        w.step(T0 + 8_000, &pairs(&[("a", "/dev/ttyUSB2"), ("b", "/dev/ttyUSB1")]));
+        assert_eq!(w.found.as_deref(), Some("/dev/ttyUSB2"));
+    }
+
+    #[test]
+    fn two_boards_with_the_same_serial_are_still_told_apart() {
+        // Both sockets carry 10c4:ea60:0001, so only the port says which moved.
+        let both = pairs(&[("k", "/dev/ttyUSB0"), ("k", "/dev/ttyUSB1")]);
+        let mut w = Identify::start(T0, &both);
+        w.step(T0 + 2_000, &pairs(&[("k", "/dev/ttyUSB0")]));
+        assert_eq!(w.found, None);
+        w.step(T0 + 4_000, &both);
+        assert_eq!(w.found.as_deref(), Some("/dev/ttyUSB1"));
+    }
+
+    #[test]
+    fn a_board_that_never_comes_back_is_no_answer_and_the_watch_runs_out() {
+        let mut w = Identify::start(T0, &pairs(&[("a", "/dev/ttyUSB0")]));
+        w.step(T0 + 2_000, &pairs(&[]));
+        assert_eq!(w.found, None);
+        assert_eq!(w.seconds_left(T0 + 2_000), 58);
+        assert!(!w.expired(T0 + 59_000));
+        w.step(T0 + 59_000, &pairs(&[]));
+        assert_eq!(w.found, None);
+        // After a minute the watch is over, and a replug then is nobody's answer.
+        assert!(w.expired(T0 + 60_000));
+        assert_eq!(w.seconds_left(T0 + 60_000), 0);
+        w.step(T0 + 61_000, &pairs(&[("a", "/dev/ttyUSB0")]));
+        assert_eq!(w.found, None);
+    }
+
+    #[test]
+    fn a_watch_starts_from_what_is_plugged_in_and_a_second_one_forgets_the_first() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut hub = Hub::new(tx);
+        assert_eq!(hub.identify_state(), (false, None, 0));
+        hub.boards = vec![board_at("/dev/ttyACM1", "1a86:55d4:x", "waiting")];
+        hub.identify_start();
+        let (watching, found, left) = hub.identify_state();
+        assert!(watching);
+        assert_eq!(found, None);
+        assert_eq!(left, 60);
+
+        hub.identify.as_mut().unwrap().found = Some("/dev/ttyACM1".into());
+        assert_eq!(hub.identify_state(), (false, Some("/dev/ttyACM1".into()), 0));
+        hub.identify_start();
+        assert_eq!(hub.identify_state().1, None);
+    }
+
+    #[test]
+    fn what_a_board_is_is_judged_on_what_it_said() {
+        assert_eq!(looks_like(&[], 0), "silent");
+        assert_eq!(looks_like(&["#DG,RX,1,sf9".into()], 12), "descent-receiver");
+        assert_eq!(looks_like(&["PKT,55,00FF,-50.0,13.75,-12".into()], 28), "descent-receiver");
+        assert_eq!(looks_like(&["HB,1,2,3".into()], 8), "descent-receiver");
+        assert_eq!(looks_like(&["Latitude_deg,Longitude_deg,Alt_m".into()], 32), "csv-receiver");
+        let row = (0..35).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let n = row.len();
+        assert_eq!(looks_like(&[row], n), "csv-receiver");
+        // A real CSV row is longer than the 200 characters the page is shown, so the
+        // counting has to happen before anything is shortened.
+        let wide = (0..35).map(|i| format!("{}.000000", i)).collect::<Vec<_>>().join(",");
+        assert!(wide.len() > PROBE_CHARS);
+        let n = wide.len();
+        assert_eq!(looks_like(&[wide.clone()], n), "csv-receiver");
+        assert_eq!(looks_like(&[clip(&wide, PROBE_CHARS)], n), "something-else");
+        assert_eq!(clip("abcdef", 3), "abc");
+        assert_eq!(clip("ab", 8), "ab");
+        assert_eq!(looks_like(&["ets Jun  8 2016 00:22:57".into()], 24), "something-else");
+        // Bytes that never finished a line are not silence.
+        assert_eq!(looks_like(&[], 17), "something-else");
+    }
+
+    #[test]
+    fn a_five_second_listen_keeps_everything_else_off_the_port() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut hub = Hub::new(tx);
+        hub.boards = vec![board_at("/dev/ttyACM1", "1a86:55d4:x", "waiting")];
+        hub.begin_probe("/dev/ttyACM1").unwrap();
+        assert!(hub.begin_probe("/dev/ttyACM1").unwrap_err().contains("already being listened to"));
+        assert!(hub.release_for_flash("/dev/ttyACM1").unwrap_err().contains("listened to"));
+        hub.end_probe("/dev/ttyACM1");
+        hub.begin_probe("/dev/ttyACM1").unwrap();
+        hub.end_probe("/dev/ttyACM1");
+
+        // An open receiver is not something to listen in on, and neither is a flash.
+        hub.pretend_open("rx1", "/dev/ttyACM1");
+        assert!(hub.begin_probe("/dev/ttyACM1").unwrap_err().contains("open as a receiver"));
+        hub.close("rx1");
+        hub.release_for_flash("/dev/ttyACM1").unwrap();
+        assert!(hub.begin_probe("/dev/ttyACM1").unwrap_err().contains("being flashed"));
+        assert!(hub.begin_probe("/dev/ttyUSB9").unwrap_err().contains("not plugged in"));
     }
 
     #[test]

@@ -60,7 +60,7 @@ fn main() {
     let ctx = Arc::new(Ctx {
         hub: hub.clone(),
         broadcast: broadcast.clone(),
-        log: log_path.clone(),
+        log: log.clone(),
         dir: dir.clone(),
     });
 
