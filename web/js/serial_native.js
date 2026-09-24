@@ -129,6 +129,14 @@
       return j;
     }
 
+    async rotateLog() {
+      const r = await fetch('/api/log/rotate', { method: 'POST' });
+      const j = await r.json().catch(() => ({ ok: false }));
+      if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
+      await this.refresh();
+      return j;
+    }
+
     async setSf(key, sf) {
       const r = await fetch('/api/receiver/' + key + '/config', {
         method: 'POST',

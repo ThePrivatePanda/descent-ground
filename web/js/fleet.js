@@ -37,11 +37,26 @@
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
   }
 
+  // Retired generations are lettered oldest first, so 64a came before 64b, and the
+  // plain number is always the one transmitting now.
+  function genLabel(n) {
+    let s = '';
+    n += 1;
+    while (n > 0) {
+      n -= 1;
+      s = String.fromCharCode(97 + (n % 26)) + s;
+      n = Math.floor(n / 26);
+    }
+    return s;
+  }
+
   function newUnit(csid) {
     const history = { t: [] };
     for (const k of SERIES) history[k] = [];
     return {
       csid,
+      label: String(csid),    // '64' while live, '64a' once retired
+      live: true,
       firstT: null, lastT: null,
       packets: 0, missed: 0, resets: 0, repeats: 0,
       lastCounter: null,
@@ -70,6 +85,8 @@
       this.units = new Map();
       this.receivers = new Map();
       this.sources = new Map();   // rx -> where its lines came from, if not a radio
+      this.retired = new Map();   // label -> a generation that ended at a counter reset
+      this.generations = new Map();  // csid -> how many of its generations have ended
       this.recent = new Map();   // hex -> {t, csid}
       this.badCrc = 0;
       this.badLength = 0;
@@ -123,6 +140,11 @@
       const csid = d.values.csid;
       this.recent.set(ev.hex, { t, csid });
       let u = this.units.get(csid);
+      if (u && this.cfg.splitOnReset !== false && this.isReset(u, d.values.counter)) {
+        const old = this.retire(csid);
+        u = null;
+        this.lastRetired = old ? old.label : null;
+      }
       if (!u) { u = newUnit(csid); this.units.set(csid, u); }
       this.updateCounter(u, d.values.counter, t);
       u.packets++;
@@ -137,6 +159,84 @@
       this.pushHistory(u, d, t);
       this.addReception(u, rx, ev, t);
       return 'new';
+    }
+
+    // A board that rebooted. The counter starts again from 0, so a drop that is not a
+    // wrap, or a second 0 in a row, means the packets after it belong to a new run.
+    isReset(u, counter) {
+      const last = u.lastCounter;
+      if (last === null) return false;
+      const wrapped = last > 65535 - WRAP_SLACK && counter < WRAP_SLACK;
+      return (counter < last && !wrapped) || (counter === 0 && last === 0);
+    }
+
+    // Put the run that just ended aside under a letter and start a clean one, so a
+    // reflashed board does not mix its old data into its new.
+    retire(csid) {
+      const u = this.units.get(csid);
+      if (!u) return null;
+      const n = this.generations.get(csid) || 0;
+      this.generations.set(csid, n + 1);
+      u.label = String(csid) + genLabel(n);
+      u.gen = n;        // past the 26th run the labels read aa, ab, which do not sort as text
+      u.live = false;
+      this.retired.set(u.label, u);
+      this.units.delete(csid);
+      return u;
+    }
+
+    // Every generation, newest run of each board first.
+    allUnits() {
+      const out = new Map();
+      for (const [csid, u] of this.units) out.set(String(csid), u);
+      for (const [label, u] of this.retired) out.set(label, u);
+      return out;
+    }
+
+    // Runs of one board that ended at a restart, oldest first.
+    earlierRuns(csid) {
+      return [...this.retired.values()].filter((u) => u.csid === csid)
+        .sort((a, b) => a.gen - b.gen);
+    }
+
+    unit(label) {
+      return this.units.get(Number(label)) || this.retired.get(label) || null;
+    }
+
+    // Clean slate, in pieces, so an operator part-way through a bench run can throw
+    // away only what is in the way. None of this touches what is already on disk.
+    clearUnit(label) {
+      const u = this.unit(label);
+      if (!u) return false;
+      if (u.live) this.units.delete(u.csid); else this.retired.delete(label);
+      for (const [hex, seen] of this.recent) if (seen.csid === u.csid) this.recent.delete(hex);
+      this.hidden.delete(label);
+      return true;
+    }
+
+    clearUnits() {
+      this.units.clear();
+      this.retired.clear();
+      this.generations.clear();
+      this.recent.clear();
+      this.hidden.clear();
+      this.total = 0;
+      this.duplicates = 0;
+      this.badCrc = 0;
+      this.badLength = 0;
+    }
+
+    // Zero a receiver's tallies without closing it: it keeps receiving.
+    clearReceiver(rx) {
+      const r = this.receivers.get(rx);
+      if (!r) return false;
+      r.packets = 0; r.unique = 0; r.badCrc = 0; r.radioErrors = 0;
+      r.firstT = null;
+      return true;
+    }
+
+    clearReceivers() {
+      for (const rx of this.receivers.keys()) this.clearReceiver(rx);
     }
 
     updateCounter(u, counter, t) {

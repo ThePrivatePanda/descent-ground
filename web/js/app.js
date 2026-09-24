@@ -12,7 +12,7 @@
   let rxCount = 0;
 
   const view = {
-    sel: null, paused: false, sort: 'attention',
+    sel: null, paused: false, sort: 'attention', expanded: new Set(),
     replay: null,   // {events, pos, clock, playing, speed, fleet, names}
   };
   const fleet = () => (view.replay ? view.replay.fleet : live);
@@ -388,21 +388,71 @@
     e.target.textContent = view.paused ? 'Resume' : 'Pause';
     e.target.classList.toggle('on', view.paused);
   });
-  $('sel-unit').addEventListener('change', (e) => { view.sel = +e.target.value; render(true); });
+  $('sel-unit').addEventListener('change', (e) => { view.sel = e.target.value; render(true); });
   $('btn-hide').addEventListener('click', () => {
     if (view.sel === null) return;
-    fleet().hidden.add(view.sel); toast('Hid CSID ' + view.sel); view.sel = null; render(true);
+    fleet().hidden.add(Number(view.sel)); toast('Hid CSID ' + view.sel); view.sel = null; render(true);
   });
   $('btn-restore').addEventListener('click', () => { fleet().hidden.clear(); render(true); });
-  $('btn-reset').addEventListener('click', () => {
+  // ---------- clearing ----------
+  // Everything is on the page: tick what should go, press Clear. Nothing here touches
+  // lines already written to disk unless a new log file is asked for.
+  const clearBoxes = { units: 'cl-units', sel: 'cl-sel', rx: 'cl-rx', hidden: 'cl-hidden', log: 'cl-log' };
+  const clearWanted = () => Object.fromEntries(Object.entries(clearBoxes).map(([k, id]) => [k, $(id).checked]));
+
+  function renderClear() {
+    const w = clearWanted();
+    const bits = [];
+    if (w.sel && view.sel) bits.push('CSID ' + view.sel);
+    else if (w.units) bits.push('all units');
+    if (w.rx) bits.push('receiver counts');
+    if (w.hidden) bits.push('hidden');
+    if (w.log) bits.push('new log file');
+    $('clear-what').textContent = bits.length ? bits.join(', ') : 'nothing ticked';
+    $('btn-clear').disabled = !bits.length;
+  }
+  for (const id of Object.values(clearBoxes)) $(id).addEventListener('change', renderClear);
+
+  $('btn-clear').addEventListener('click', async () => {
+    const w = clearWanted();
     const f = fleet();
-    const keep = f.receivers;
-    f.clear(); f.receivers = keep;
-    view.sel = null; toast('Fleet reset. Receivers stay connected; the session file keeps every line.'); render(true);
+    const done = [];
+    if (w.sel && view.sel) {
+      const label = view.sel;
+      if (f.clearUnit(label)) { done.push('CSID ' + label); view.sel = null; }
+    } else if (w.units) {
+      f.clearUnits(); view.sel = null; view.expanded.clear(); done.push('every unit');
+    }
+    if (w.rx) { f.clearReceivers(); done.push('receiver counts'); }
+    if (w.hidden) { f.hidden.clear(); done.push('hidden units'); }
+    if (w.log) {
+      try {
+        const j = await hub.rotateLog();
+        done.push('new log ' + (j.log || '').split(/[\\/]/).pop());
+      } catch (err) {
+        toast('Could not start a new log: ' + (err.message || err));
+      }
+    }
+    toast(done.length ? 'Cleared ' + done.join(', ') : 'Nothing to clear');
+    render(true);
   });
+
   $('fleet').querySelector('tbody').addEventListener('click', (e) => {
+    const drop = e.target.getAttribute('data-drop');
+    if (drop) {
+      if (fleet().clearUnit(drop)) toast('Deleted run ' + drop);
+      if (view.sel === drop) view.sel = null;
+      render(true);
+      return;
+    }
+    const more = e.target.getAttribute('data-gens');
+    if (more) {
+      if (view.expanded.has(more)) view.expanded.delete(more); else view.expanded.add(more);
+      render(true);
+      return;
+    }
     const tr = e.target.closest('tr');
-    if (tr) { view.sel = +tr.dataset.csid; render(true); }
+    if (tr && tr.dataset.label) { view.sel = tr.dataset.label; render(true); }
   });
 
   // ---------- settings ----------
@@ -551,16 +601,38 @@
     return '<span class="batt' + (pct < settings.lowBatteryPct ? ' low' : '') + '"><i><b style="width:' + pct.toFixed(0) + '%"></b></i>' + fmt(pct, 1) + '%</span>';
   }
 
+  // An earlier run of a board, shown under the live one. Deliberately thin: it is
+  // history, and the row that matters is the one still transmitting.
+  function earlierRow(f, u, t, rxTotal) {
+    const span = u.firstT === null ? '—' : age(u.lastT - u.firstT);
+    return '<tr class="gen' + (u.label === view.sel ? ' sel' : '') + '" data-label="' + u.label + '">' +
+      '<td class="csid">' + u.label + '</td>' +
+      '<td><span class="muted">earlier run</span></td>' +
+      '<td class="r muted" title="Ended ' + esc(new Date(u.lastT).toLocaleString()) + '">' + age(t - u.lastT) + ' ago</td>' +
+      '<td class="r muted">' + u.lastCounter + '</td>' +
+      '<td class="r">' + u.packets + '</td>' +
+      '<td class="r' + (u.missed ? '' : ' muted') + '">' + u.missed + '</td>' +
+      '<td class="r muted">' + fmt(f.rxPercent(u), 1) + '</td>' +
+      '<td class="r muted">—</td>' +
+      '<td class="muted">ran for ' + span + '</td>' +
+      '<td colspan="5" class="r"><button data-drop="' + u.label + '" class="quiet">Delete this run</button></td>' +
+      '</tr>';
+  }
+
   function renderFleet(f, t) {
     const rows = f.rows(t, view.sort);
-    if (view.sel === null || !f.units.has(view.sel) || f.hidden.has(view.sel)) view.sel = rows.length ? rows[0].unit.csid : null;
+    if (view.sel === null || !f.unit(view.sel) || f.hidden.has(Number(view.sel))) view.sel = rows.length ? rows[0].unit.label : null;
     $('fleet-empty').hidden = rows.length > 0;
     const rxTotal = [...f.receivers.values()].filter((r) => r.packets > 0).length;
     $('fleet').querySelector('tbody').innerHTML = rows.map(({ unit: u, state, age: a }) => {
       const d = u.latest;
       const rssiCls = u.bestRssi < settings.weakRssiDbm ? ' serious' : '';
-      return '<tr data-csid="' + u.csid + '"' + (u.csid === view.sel ? ' class="sel"' : '') + '>' +
-        '<td class="csid">' + u.csid + '</td>' +
+      const earlier = f.earlierRuns(u.csid);
+      const open = view.expanded.has(String(u.csid));
+      return '<tr data-label="' + u.label + '"' + (u.label === view.sel ? ' class="sel"' : '') + '>' +
+        '<td class="csid">' + u.label +
+          (earlier.length ? ' <button class="gens" data-gens="' + u.csid + '" title="Earlier runs of this board, before it restarted">' +
+            (open ? '−' : '+') + earlier.length + '</button>' : '') + '</td>' +
         '<td>' + stateHtml(state) + (d.saturated ? '<span class="flag" title="Acceleration near the accelerometer limit">saturated</span>' : '') + '</td>' +
         '<td class="r">' + ageCell(f, u, a) + '</td>' +
         '<td class="r">' + u.lastCounter + '</td>' +
@@ -574,11 +646,13 @@
         '<td class="r">' + fmt(u.bestSnr, 1) + '</td>' +
         '<td class="r">' + (Number.isFinite(u.intervalMs) ? fmt(u.intervalMs / 1000, u.intervalMs < 10000 ? 2 : 0) + ' s' : '—') + '</td>' +
         '<td class="r" title="' + esc(u.receptions.map((r) => rxName(r.rx) + ': ' + fmt(r.rssi, 1) + ' dBm').join('\n')) + '">' + u.receptions.length + ' of ' + rxTotal + '</td>' +
-        '</tr>';
+        '</tr>' + (open ? earlier.map((g) => earlierRow(f, g, t, rxTotal)).join('') : '');
     }).join('');
     const sel = $('sel-unit');
-    const opts = [...f.units.keys()].sort((a, b) => a - b);
-    const want = opts.map((c) => '<option value="' + c + '">CSID ' + c + '</option>').join('');
+    const want = [...f.allUnits().values()]
+      .sort((a, b) => (a.csid - b.csid) || (b.live - a.live) || (a.gen - b.gen))
+      .map((u) => '<option value="' + u.label + '">CSID ' + u.label + (u.live ? '' : ' (earlier run)') + '</option>')
+      .join('');
     if (sel.dataset.sig !== want) { sel.innerHTML = want; sel.dataset.sig = want; }
     if (view.sel !== null) sel.value = view.sel;
   }
@@ -607,7 +681,7 @@
 
   function renderLatest(f, t) {
     if (view.paused) return;
-    const u = view.sel === null ? null : f.units.get(view.sel);
+    const u = view.sel === null ? null : f.unit(view.sel);
     const el = $('latest');
     if (!u) { el.innerHTML = '<div class="none">Select a unit in the fleet list.</div>'; return; }
     const d = u.latest;
@@ -693,6 +767,7 @@
         (guessed ? '<span class="st serious">times set by hand</span>' : '') + '</span>');
     }
     offerSetupOnce();
+    renderClear();
     // Two spreading factors is the normal setup for a test: the LE boards are on SF9, the HP
     // boards on SF12, and one receiver hears only one of them.
     const onSf = [...f.receivers.entries()].filter(([, r]) => r.info.sf);
@@ -731,7 +806,7 @@
     renderRecorder();
     if (force || Date.now() - lastChart > 500) {
       lastChart = Date.now();
-      const u = view.sel === null ? null : f.units.get(view.sel);
+      const u = view.sel === null ? null : f.unit(view.sel);
       $('graph-title').textContent = u ? 'CSID ' + u.csid + ' history' : 'History';
       charts.update(u, { windowMin: settings.graphWindowMin, lineWidth: settings.lineWidth, saturationMps2: settings.saturationMps2 });
     }

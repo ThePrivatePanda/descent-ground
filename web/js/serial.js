@@ -80,6 +80,11 @@
       this.onChange();
     }
 
+    // No app process here, so there is no log file on disk to roll over.
+    async rotateLog() {
+      throw new Error('only the app writes a log file; this page is not the app');
+    }
+
     async close(p) {
       p.status = 'closing';
       try { if (p.reader) await p.reader.cancel(); } catch (e) { /* already gone */ }

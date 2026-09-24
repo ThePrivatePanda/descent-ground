@@ -52,15 +52,33 @@
 </div>
 
 <main class="layout">
-  <section class="pane left">
-    <div class="pane-head">
-      <h2>Unit</h2>
-      <select id="sel-unit" title="Unit shown"></select>
-      <span class="spacer"></span>
-      <button id="btn-pause" class="quiet" title="Freeze this panel">Pause</button>
-    </div>
-    <div id="latest" class="detail"></div>
-  </section>
+  <div class="left">
+    <section class="pane">
+      <div class="pane-head">
+        <h2>Unit</h2>
+        <select id="sel-unit" title="Unit shown"></select>
+        <span class="spacer"></span>
+        <button id="btn-pause" class="quiet" title="Freeze this panel">Pause</button>
+      </div>
+      <div id="latest" class="detail"></div>
+    </section>
+
+    <section class="pane clearbox">
+      <div class="pane-head">
+        <h2>Clear</h2>
+        <span id="clear-what" class="note"></span>
+        <span class="spacer"></span>
+        <button id="btn-clear" class="primary" title="Clear everything ticked below">Clear</button>
+      </div>
+      <div class="clear-opts">
+        <label><input type="checkbox" id="cl-units" checked> All unit data and history</label>
+        <label><input type="checkbox" id="cl-sel"> Only the unit shown</label>
+        <label><input type="checkbox" id="cl-rx" checked> Receiver counts</label>
+        <label><input type="checkbox" id="cl-hidden" checked> Hidden units</label>
+        <label><input type="checkbox" id="cl-log"> Start a new log file</label>
+      </div>
+    </section>
+  </div>
 
   <section class="right">
     <div class="pane fleet">
@@ -74,7 +92,6 @@
         </select>
         <button id="btn-hide" class="quiet" title="Hide the selected unit">Hide</button>
         <button id="btn-restore" class="quiet" title="Show hidden units">Restore</button>
-        <button id="btn-reset" class="quiet" title="Forget all units and counts">Reset fleet</button>
       </div>
       <div class="scroll">
         <table id="fleet" class="grid">
