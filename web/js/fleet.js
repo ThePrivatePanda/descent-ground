@@ -55,6 +55,8 @@
     for (const k of SERIES) history[k] = [];
     return {
       csid,
+      sourceRx: null,         // the source this run came from, for a log off a chip
+      fromChip: false,        // read off flash, so counter-derived numbers do not apply
       label: String(csid),    // '64' while live, '64a' once retired
       live: true,
       firstT: null, lastT: null,
@@ -126,7 +128,10 @@
       if (!ev.decoded.crcOk) { r.badCrc++; this.badCrc++; return 'badcrc'; }
 
       for (const [hex, seen] of this.recent) if (t - seen.t > this.cfg.dedupeMs) this.recent.delete(hex);
-      const seen = this.recent.get(ev.hex);
+      // Deduplication exists because two receivers hear one transmission. A chip log has
+      // no receivers, and two records that happen to hold the same bytes are two real
+      // samples, so dropping one loses data that was measured.
+      const seen = this.sources.get(rx) ? null : this.recent.get(ev.hex);
       if (seen) {
         this.duplicates++;
         const u = this.units.get(seen.csid);
@@ -139,14 +144,36 @@
       d.saturated = d.valid.accel && ['ax', 'ay', 'az'].some((k) => Math.abs(d.values[k]) >= this.cfg.saturationMps2);
       const csid = d.values.csid;
       this.recent.set(ev.hex, { t, csid });
+      // A log read off a chip is not a packet stream and its counter does not mean what
+      // it means on the air: the board logs at 20 Hz but the counter moves once per
+      // transmission, so the same value repeats nine or ten times over records that are
+      // all different. Worse, every boot in a dump is dated from the same start, so the
+      // boots interleave and the counter appears to jump backwards constantly. Runs come
+      // from the dump's own boot boundaries instead, which arrive as separate sources.
+      // Splitting on the source does not work either: every boot in a dump starts at
+      // the same time, so they interleave and the source changes on nearly every
+      // record. A chip log is therefore not split at all. The boots are still visible
+      // as separate sources, and telling them apart properly needs a boot number on
+      // each record, which the file does not carry yet.
+      const fromChip = !!this.sources.get(rx);
       let u = this.units.get(csid);
-      if (u && this.cfg.splitOnReset !== false && this.isReset(u, d.values.counter)) {
+      if (!fromChip && u && this.cfg.splitOnReset !== false && this.isReset(u, d.values.counter)) {
         const old = this.retire(csid);
         u = null;
         this.lastRetired = old ? old.label : null;
       }
       if (!u) { u = newUnit(csid); this.units.set(csid, u); }
-      this.updateCounter(u, d.values.counter, t);
+      if (fromChip) {
+        // Missed, restarts, repeats and the transmit interval are all read off the
+        // counter, and for a chip log the counter counts transmissions while the file
+        // holds every sample, with the boots interleaved on top. Nothing derived from
+        // it would be true, so none of it is claimed.
+        u.sourceRx = rx;
+        u.fromChip = true;
+        u.lastCounter = d.values.counter;
+      } else {
+        this.updateCounter(u, d.values.counter, t);
+      }
       u.packets++;
       if (u.firstT === null) u.firstT = t;
       u.lastT = t;

@@ -96,6 +96,12 @@ A boot that never got a GPS fix carries `time_source=start` instead of an anchor
 times were chosen by a human. The dashboard says so on screen, because once both are epoch
 milliseconds a guessed time axis looks exactly like a real one.
 
+A chip log is not a packet stream and is read differently: it is never split into runs, nothing in
+it is discarded as a duplicate reception, and the columns that are read off the transmission
+counter — missed, restarts, Rx %, interval — show nothing rather than something wrong. The board
+logs at 20 Hz while the counter moves once per transmission, and every boot in a dump starts at the
+same time, so the counter tells you nothing about runs here.
+
 The dashboard shows that source in the receiver strip so a replayed dump cannot be mistaken for
 live reception. Records off a chip carry no RSSI or SNR, so those columns stay blank and the weak
 RF warning never fires: an absence, not a fault.

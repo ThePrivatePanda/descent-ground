@@ -279,3 +279,34 @@ test('lettering starts again once a board has no runs left', () => {
   fleet.ingest(synthetic(64, 0), t += 5000, 'rx1');
   assert.ok(fleet.unit('64a'), 'the next split is 64a again, not a letter further on');
 });
+
+// A log read off a chip is not a packet stream. The board logs at 20 Hz while the
+// counter moves once per transmission, and every boot in a dump starts at the same
+// time, so the boots interleave and the counter appears to jump backwards constantly.
+// Read as if it were radio, this one file became 1168 runs with 1685 records thrown
+// away as duplicates. It is one board, 6627 records, all CRCs good.
+test('a real flash dump is one board, not a thousand runs', () => {
+  const R = require('../web/js/recorder.js');
+  const file = path.join(__dirname, '../../SSDS_DeSCENT/Software/V2_6_X/data/2026-09-23_2159/ground.log');
+  if (!fs.existsSync(file)) return;   // the dump lives in the flight repo
+  const rows = R.parseLogFile(fs.readFileSync(file, 'utf8'), 'ground.log', 0);
+  const fleet = new Fleet();
+  const kinds = {};
+  for (const r of rows) {
+    const k = fleet.ingest(L.parseLine(r.text), r.t, r.rx);
+    kinds[k] = (kinds[k] || 0) + 1;
+  }
+  assert.strictEqual(kinds.source, 5, 'five boots, each naming itself');
+  assert.strictEqual(kinds.new, 6627, 'every record kept');
+  assert.strictEqual(kinds.duplicate, undefined, 'nothing off a chip is a duplicate reception');
+  assert.strictEqual(fleet.badCrc, 0);
+  assert.deepStrictEqual([...fleet.allUnits().keys()], ['7'], 'one board, one run');
+
+  const u = fleet.unit('7');
+  assert.strictEqual(u.packets, 6627);
+  assert.strictEqual(u.history.t.length, 6627, 'every record plotted');
+  assert.strictEqual(u.fromChip, true);
+  // Read off the counter, so meaningless here: claimed as nothing rather than as wrong.
+  assert.strictEqual(u.resets, 0);
+  assert.strictEqual(u.missed, 0);
+});

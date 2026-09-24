@@ -815,9 +815,11 @@
         '<td class="r">' + ageCell(f, u, a) + '</td>' +
         '<td class="r">' + u.lastCounter + '</td>' +
         '<td class="r">' + u.packets + '</td>' +
-        '<td class="r' + (u.missed ? '' : ' muted') + '">' + u.missed + '</td>' +
-        '<td class="r">' + fmt(f.rxPercent(u), 1) + '</td>' +
-        '<td class="r' + (u.resets ? ' serious' : ' muted') + '">' + u.resets + '</td>' +
+        // Off a chip there is no link and no transmission counter to reason from, so
+        // these say nothing rather than saying something wrong.
+        '<td class="r' + (u.fromChip || !u.missed ? ' muted' : '') + '">' + (u.fromChip ? '—' : u.missed) + '</td>' +
+        '<td class="r' + (u.fromChip ? ' muted' : '') + '">' + (u.fromChip ? '—' : fmt(f.rxPercent(u), 1)) + '</td>' +
+        '<td class="r' + (u.fromChip || !u.resets ? ' muted' : ' serious') + '">' + (u.fromChip ? '—' : u.resets) + '</td>' +
         '<td>' + battCell(d) + '</td>' +
         '<td>' + bits(d.values.validity) + '</td>' +
         '<td class="r' + rssiCls + '">' + fmt(u.bestRssi, 1) + '</td>' +
