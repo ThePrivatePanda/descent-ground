@@ -219,3 +219,63 @@ test('past the 26th run the labels keep their order', () => {
   assert.strictEqual(runs[26].label, '9aa', 'the 27th run carries on past z');
   assert.deepStrictEqual(runs.map((u) => u.gen), runs.map((u, i) => i), 'oldest first, no reordering');
 });
+
+test('an accidental reset can be merged back into the run that followed', () => {
+  const fleet = new Fleet();
+  let t = 1000;
+  for (const c of [0, 1, 2]) fleet.ingest(synthetic(64, c), t += 1000, 'rx1');
+  for (const c of [0, 1]) fleet.ingest(synthetic(64, c), t += 1000, 'rx1');
+  assert.deepStrictEqual([...fleet.allUnits().keys()].sort(), ['64', '64a']);
+
+  const before = fleet.unit('64a').history.t.length + fleet.unit('64').history.t.length;
+  assert.strictEqual(fleet.mergeRun('64a'), '64');
+  assert.strictEqual(fleet.unit('64a'), null, 'the merged run is gone');
+  const u = fleet.unit('64');
+  assert.strictEqual(u.packets, 5, 'packets from both runs');
+  assert.strictEqual(u.history.t.length, before, 'no history points lost');
+  for (const [k, col] of Object.entries(u.history)) {
+    assert.strictEqual(col.length, u.history.t.length, 'series ' + k + ' still lines up');
+  }
+  assert.ok(u.history.t.every((v, i) => i === 0 || v >= u.history.t[i - 1]), 'times still go forward');
+});
+
+test('merging is a no-op on a run that is not there', () => {
+  const fleet = new Fleet();
+  fleet.ingest(synthetic(64, 0), 2000, 'rx1');
+  assert.strictEqual(fleet.mergeRun('64z'), null);
+  assert.strictEqual(fleet.unit('64').packets, 1);
+});
+
+test('all of a board\'s earlier runs can go back into the live one at once', () => {
+  const fleet = new Fleet();
+  let t = 1000;
+  for (let run = 0; run < 4; run++) for (const c of [0, 1]) fleet.ingest(synthetic(7, c), t += 1000, 'rx1');
+  assert.strictEqual(fleet.earlierRuns(7).length, 3);
+  assert.strictEqual(fleet.mergeAllRuns(7), 3);
+  assert.strictEqual(fleet.earlierRuns(7).length, 0);
+  assert.strictEqual(fleet.unit('7').packets, 8);
+  assert.strictEqual(fleet.unit('7').history.t.length, 8);
+});
+
+test('a merged board still shows that it rebooted', () => {
+  const fleet = new Fleet();
+  let t = 1000;
+  for (const c of [0, 1, 2]) fleet.ingest(synthetic(64, c), t += 1000, 'rx1');
+  for (const c of [0, 1]) fleet.ingest(synthetic(64, c), t += 1000, 'rx1');
+  fleet.mergeRun('64a');
+  assert.strictEqual(fleet.unit('64').resets, 1, 'the restart is still counted after merging');
+});
+
+test('lettering starts again once a board has no runs left', () => {
+  const fleet = new Fleet();
+  let t = 1000;
+  for (const c of [0, 1]) fleet.ingest(synthetic(64, c), t += 1000, 'rx1');
+  for (const c of [0, 1]) fleet.ingest(synthetic(64, c), t += 1000, 'rx1');
+  assert.ok(fleet.unit('64a'));
+  fleet.clearUnit('64a');
+  fleet.clearUnit('64');
+  // Two identical packets inside the dedupe window are one packet, so space them.
+  fleet.ingest(synthetic(64, 0), t += 5000, 'rx1');
+  fleet.ingest(synthetic(64, 0), t += 5000, 'rx1');
+  assert.ok(fleet.unit('64a'), 'the next split is 64a again, not a letter further on');
+});

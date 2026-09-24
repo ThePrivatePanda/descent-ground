@@ -546,6 +546,24 @@
   });
 
   $('fleet').querySelector('tbody').addEventListener('click', (e) => {
+    const merge = e.target.getAttribute('data-merge');
+    if (merge) {
+      const into = fleet().mergeRun(merge);
+      if (into) {
+        toast('Merged ' + merge + ' into ' + into);
+        if (view.sel === merge) view.sel = into;
+      }
+      render(true);
+      return;
+    }
+    const mergeAll = e.target.getAttribute('data-mergeall');
+    if (mergeAll) {
+      const n = fleet().mergeAllRuns(Number(mergeAll));
+      toast(n ? 'Joined ' + n + (n === 1 ? ' earlier run' : ' earlier runs') + ' into CSID ' + mergeAll : 'Nothing to join');
+      view.sel = String(mergeAll);
+      render(true);
+      return;
+    }
     const drop = e.target.getAttribute('data-drop');
     if (drop) {
       if (fleet().clearUnit(drop)) toast('Deleted run ' + drop);
@@ -723,7 +741,9 @@
       '<td class="r muted">' + fmt(f.rxPercent(u), 1) + '</td>' +
       '<td class="r muted">—</td>' +
       '<td class="muted">ran for ' + span + '</td>' +
-      '<td colspan="5" class="r"><button data-drop="' + u.label + '" class="quiet">Delete this run</button></td>' +
+      '<td colspan="5" class="r">' +
+        '<button data-merge="' + u.label + '" class="quiet" title="It was not really a new run: join it to the one after it">Merge forward</button> ' +
+        '<button data-drop="' + u.label + '" class="quiet">Delete this run</button></td>' +
       '</tr>';
   }
 
@@ -740,7 +760,9 @@
       return '<tr data-label="' + u.label + '"' + (u.label === view.sel ? ' class="sel"' : '') + '>' +
         '<td class="csid">' + u.label +
           (earlier.length ? ' <button class="gens" data-gens="' + u.csid + '" title="Earlier runs of this board, before it restarted">' +
-            (open ? '−' : '+') + earlier.length + '</button>' : '') + '</td>' +
+            (open ? '−' : '+') + earlier.length + '</button>' : '') +
+          (earlier.length ? ' <button class="gens" data-mergeall="' + u.csid + '" title="It was one run really: put every earlier run back into this one">' +
+            (earlier.length === 1 ? 'join' : 'join all') + '</button>' : '') + '</td>' +
         '<td>' + stateHtml(state) + (d.saturated ? '<span class="flag" title="Acceleration near the accelerometer limit">saturated</span>' : '') + '</td>' +
         '<td class="r">' + ageCell(f, u, a) + '</td>' +
         '<td class="r">' + u.lastCounter + '</td>' +

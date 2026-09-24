@@ -193,6 +193,56 @@
       return out;
     }
 
+    // Undo a split. A board that rebooted for a boring reason, a knocked cable on the
+    // bench, is still one run as far as the operator is concerned, so its data is put
+    // back together with the run that followed it. Times only ever go forward between
+    // runs, so the older one goes in front.
+    mergeRun(label) {
+      const a = this.retired.get(label);
+      if (!a) return null;
+      const later = [...this.retired.values()]
+        .filter((u) => u.csid === a.csid && u.gen > a.gen)
+        .sort((x, y) => x.gen - y.gen)[0] || this.units.get(a.csid);
+      if (!later) return null;
+
+      if (a.firstT !== null) later.firstT = later.firstT === null ? a.firstT : Math.min(a.firstT, later.firstT);
+      later.packets += a.packets;
+      later.missed += a.missed;
+      later.repeats += a.repeats;
+      // The board did reboot, whatever the operator calls it. Splitting replaced the
+      // reset count, so merging has to put it back or a merged board reads as one that
+      // never restarted.
+      later.resets += a.resets + 1;
+      later.saturatedCount += a.saturatedCount;
+
+      for (const k of Object.keys(later.history)) {
+        later.history[k] = (a.history[k] || []).concat(later.history[k]);
+      }
+      for (const [rx, h] of Object.entries(a.rxHistory)) {
+        const into = later.rxHistory[rx] || (later.rxHistory[rx] = { t: [], rssi: [], snr: [] });
+        into.t = h.t.concat(into.t);
+        into.rssi = h.rssi.concat(into.rssi);
+        into.snr = h.snr.concat(into.snr);
+      }
+      // The newer run's last trusted values win; the older one fills what it never saw.
+      for (const [k, v] of Object.entries(a.lastValid)) {
+        if (later.lastValid[k] === undefined) later.lastValid[k] = v;
+      }
+
+      this.retired.delete(label);
+      if (!this.earlierRuns(a.csid).length) this.generations.delete(a.csid);
+      return later.label;
+    }
+
+    // Put every earlier run of a board back into the one transmitting now.
+    mergeAllRuns(csid) {
+      let n = 0;
+      for (const u of this.earlierRuns(csid).reverse()) {
+        if (this.mergeRun(u.label)) n++;
+      }
+      return n;
+    }
+
     // Runs of one board that ended at a restart, oldest first.
     earlierRuns(csid) {
       return [...this.retired.values()].filter((u) => u.csid === csid)
@@ -211,6 +261,9 @@
       if (u.live) this.units.delete(u.csid); else this.retired.delete(label);
       for (const [hex, seen] of this.recent) if (seen.csid === u.csid) this.recent.delete(hex);
       this.hidden.delete(label);
+      // With nothing of this board left, its lettering starts from a again rather than
+      // carrying on from where it was and looking as though runs went missing.
+      if (!this.units.has(u.csid) && !this.earlierRuns(u.csid).length) this.generations.delete(u.csid);
       return true;
     }
 
