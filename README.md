@@ -4,7 +4,9 @@ Fleet dashboard for DeSCENT ChipSats. Runs in the browser, reads one or more T-B
 
 ## Standalone executable
 
-For running it without opening the page or picking ports by hand: grab `DescentGround.exe` (Windows) or `descent-ground` (Linux) from the [Releases](../../releases) page. One file, no install. Double-click it and it opens your browser to the dashboard, finds every T-Beam plugged in with no port picker, and writes every line from every receiver to a log file next to itself, whether or not a browser is open.
+For running it without opening the page or picking ports by hand: grab the file for your machine
+from the [Releases](../../releases) page — `descent-ground-linux-x64`, `descent-ground-macos-arm64`
+or `descent-ground-windows-x64.exe`. One file, no install. Double-click it and it opens your browser to the dashboard, finds every T-Beam plugged in with no port picker, and writes every line from every receiver to a log file next to itself, whether or not a browser is open.
 
 - Windows: the exe is unsigned, so SmartScreen warns once — More info → Run anyway.
 - Linux: you need to be in the `dialout` group, the same one Chrome's Web Serial already needs.
@@ -16,6 +18,12 @@ pass a flag, so the file is the way to make it stick. Either way it prints its a
 open that when you want it. `--browser` overrides the file for one run, and `--help` lists the
 lot.
 
+If you cannot tell which port is which board, press **Which board is which?**, then unplug the
+board you mean and plug it back in. The app watches which port disappears and returns, and you give
+that one a name. Nothing is opened to do this, so it is safe to do with a ChipSat on the same
+laptop. **Test** listens to a board for five seconds without writing to it and says whether it
+heard a receiver, an old CSV receiver, something else, or silence.
+
 Every board you plug in is listed under **Set up receiver** with its USB chip and serial number.
 You say which ones are receivers; the app opens those and leaves everything else alone. It asks
 first because opening a port pulses DTR, which resets an ESP32, and the USB chip cannot tell a
@@ -24,6 +32,40 @@ T-Beam from a ChipSat: they can carry the same one.
 The answer is remembered per board, not per socket, in `descent-ground-boards.txt` beside the app,
 so a replug or a different USB port needs no second answer and any new T-Beam takes one click.
 Disconnecting a receiver with ✕ keeps it shut until you plug it back in.
+
+## Runs
+
+A ChipSat's counter starts again from 0 every time it reboots, so a reflash would otherwise mix old
+data into new. Each run is kept separately: the one transmitting now keeps the plain CSID, and
+earlier runs become `64a`, `64b` and so on, oldest first. The fleet list shows one row per board
+with a `+3` button to unfold them, so a board that restarted thirty times is still one row.
+
+If a restart was an accident — a knocked cable on the bench — press **join** on that board and the
+earlier runs go back into the current one, history and all. The restart is still counted, so the
+board does not read as one that never rebooted. Individual runs can be deleted instead.
+
+## Clearing
+
+The **Clear** box at the bottom left holds one tick per thing: all units, only the unit shown,
+receiver counts, hidden units, and starting a new log file. Tick what should go and press Clear.
+Clearing receiver counts does not disconnect anything, and nothing already written to a log file is
+touched unless you ask for a new one.
+
+## Replaying a log without clicking
+
+`?log=<url>` on the address opens a log on load and goes straight into replay, so pulling a chip can
+end with the dashboard already showing it:
+
+```
+http://127.0.0.1:8765/?log=http://127.0.0.1:44333/log.log
+```
+
+Repeat the parameter to merge several files, as opening several at once does. Percent-encode the
+inner URL if it contains an `&`. A file that will not load leaves a working page and says why.
+
+Note that the hosted site at ground.privatepanda.co **cannot** do this for a log served from your
+own machine: a page loaded over https is not allowed to fetch `http://127.0.0.1`, and the browser
+blocks it before any request is made. Use the app's own address for that, as above.
 
 ## Run it
 
