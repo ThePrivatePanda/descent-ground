@@ -40,8 +40,12 @@ data into new. Each run is kept separately: the one transmitting now keeps the p
 earlier runs become `64a`, `64b` and so on, oldest first. The fleet list shows one row per board
 with a `+3` button to unfold them, so a board that restarted thirty times is still one row.
 
-If a restart was an accident — a knocked cable on the bench — press **join** on that board and the
-earlier runs go back into the current one, history and all. The restart is still counted, so the
+Runs are managed in the **Runs** tab of the history panel, beside Overview and IMU: every run of the
+selected board, what it holds, and a button to join it into the next one or throw it away. The fleet
+list carries the same actions in miniature.
+
+If a restart was an accident — a knocked cable on the bench — press **Join into the next run** and
+the earlier run goes back into the current one, history and all. The restart is still counted, so the
 board does not read as one that never rebooted. Individual runs can be deleted instead.
 
 ## Clearing

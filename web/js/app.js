@@ -735,6 +735,40 @@
   // history, and the row that matters is the one still transmitting.
   const AUTO_OPEN_RUNS = 3;
 
+  // The Runs tab. A board's counter starts again from 0 every time it restarts, so its
+  // data is kept as separate runs. This is where they are put back together when the
+  // restart was an accident, and thrown away when the run was rubbish.
+  function renderRuns(el, unit) {
+    if (!unit) { el.innerHTML = '<p class="empty">Select a unit in the fleet list.</p>'; return; }
+    const f = fleet();
+    const csid = unit.csid;
+    const live = f.units.get(csid);
+    const earlier = f.earlierRuns(csid);
+    const all = earlier.concat(live ? [live] : []);
+    const t = now();
+
+    const head = '<p class="note">CSID ' + csid + ' has ' + (all.length === 1 ? 'one run' : all.length + ' runs') +
+      '. A run ends when the board restarts and its counter goes back to 0. ' +
+      (earlier.length ? 'If a restart was an accident, join the runs back together.' : 'Nothing to join.') + '</p>' +
+      (earlier.length > 1 ? '<p><button id="runs-joinall" class="primary">Join all ' + all.length + ' runs into one</button></p>' : '');
+
+    const rows = all.map((u) => {
+      const span = u.firstT === null ? '—' : age(u.lastT - u.firstT);
+      const when = u.firstT === null ? '' : new Date(u.firstT).toLocaleTimeString() + ' to ' + new Date(u.lastT).toLocaleTimeString();
+      const joinable = !u.live;
+      return '<div class="runrow' + (u.label === view.sel ? ' sel' : '') + '">' +
+        '<div class="runhead"><b data-pick="' + u.label + '">' + u.label + '</b>' +
+        (u.live ? '<span class="st good">transmitting now</span>' : '<span class="muted">earlier run</span>') + '</div>' +
+        '<div class="note">' + u.packets + ' packets, ' + u.missed + ' missed, ran for ' + span +
+          (when ? ' — ' + esc(when) : '') + '</div>' +
+        '<div class="setup-actions">' +
+          (joinable ? '<button data-merge="' + u.label + '" class="primary">Join into the next run</button>' : '') +
+          '<button data-drop="' + u.label + '">Delete this run</button>' +
+        '</div></div>';
+    }).join('');
+    el.innerHTML = '<div class="runs">' + head + rows + '</div>';
+  }
+
   function earlierRow(f, u, t, rxTotal) {
     const span = u.firstT === null ? '—' : age(u.lastT - u.firstT);
     return '<tr class="gen' + (u.label === view.sel ? ' sel' : '') + '" data-label="' + u.label + '">' +
@@ -940,6 +974,30 @@
   });
 
   const charts = new DG.Charts($('charts'), $('tabs'), (k) => ({ label: rxName(k), index: meta(k).index }));
+  charts.custom = renderRuns;
+
+  // The Runs tab owns its own buttons; the fleet table's copies do the same work.
+  $('charts').addEventListener('click', (e) => {
+    const merge = e.target.getAttribute('data-merge');
+    const drop = e.target.getAttribute('data-drop');
+    const pick = e.target.getAttribute('data-pick');
+    const f = fleet();
+    if (e.target.id === 'runs-joinall') {
+      const u = view.sel === null ? null : f.unit(view.sel);
+      if (u) { const n = f.mergeAllRuns(u.csid); view.sel = String(u.csid); toast('Joined ' + n + ' earlier ' + (n === 1 ? 'run' : 'runs')); }
+    } else if (merge) {
+      const into = f.mergeRun(merge);
+      if (into) { toast('Joined ' + merge + ' into ' + into); if (view.sel === merge) view.sel = into; }
+    } else if (drop) {
+      if (f.clearUnit(drop)) toast('Deleted run ' + drop);
+      if (view.sel === drop) view.sel = null;
+    } else if (pick) {
+      view.sel = pick;
+    } else {
+      return;
+    }
+    render(true);
+  });
   let lastChart = 0;
 
   function render(force) {

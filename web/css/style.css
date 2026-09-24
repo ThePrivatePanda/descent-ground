@@ -276,3 +276,12 @@ tr.gen td.csid { font-weight: 500; padding-left: 20px; }
 .testout { margin: 6px 0 0; padding: 6px 8px; background: var(--sunk); border-radius: 4px; font-size: 11px; white-space: pre-wrap; max-height: 120px; overflow: auto; }
 .act { font-size: 11px; padding: 1px 6px; margin-left: 4px; border-radius: 3px; }
 tr.gen td.csid { white-space: nowrap; }
+
+/* ---------- runs tab ---------- */
+.runs { padding: 4px 4px 12px; }
+.runrow { padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--r); margin-bottom: 8px; }
+.runrow.sel { box-shadow: inset 3px 0 0 var(--accent); background: var(--sunk); }
+.runhead { display: flex; align-items: center; gap: 8px; }
+.runhead b { font-size: 15px; cursor: pointer; }
+.runs .setup-actions { margin-top: 8px; }
+.charts.custom { display: block; }

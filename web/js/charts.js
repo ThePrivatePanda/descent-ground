@@ -15,6 +15,8 @@
   }
 
   // Tab -> panels -> series. `key` reads unit.history[key]; `rx` = per receiver.
+  // A tab marked custom draws no plots: the page fills the panel itself. Runs is one,
+  // because a board's earlier runs are a list to act on, not a graph.
   const TABS = [
     { id: 'overview', label: 'Overview', panels: [
       { title: 'Battery', unit: '%', series: [{ key: 'battery', label: 'Battery' }] },
@@ -43,6 +45,7 @@
       { title: 'RSSI per receiver', unit: 'dBm', rx: 'rssi' },
       { title: 'SNR per receiver', unit: 'dB', rx: 'snr' },
     ] },
+    { id: 'runs', label: 'Runs', custom: true },
   ];
 
   const clock = (s) => new Date(s * 1000).toTimeString().slice(0, 8);
@@ -53,7 +56,8 @@
       this.el = container;
       this.tabsEl = tabsEl;
       this.rxLabel = rxLabel;     // rxKey -> {label, index}
-      this.tab = 'overview';
+      const wanted = new URLSearchParams(location.search).get('tab');
+      this.tab = TABS.some((t) => t.id === wanted) ? wanted : 'overview';
       this.plots = [];
       this.sig = '';
       for (const t of TABS) {
@@ -116,6 +120,7 @@
     }
 
     build(panels, opt) {
+      this.el.classList.remove('custom');
       this.el.innerHTML = '';
       this.plots = [];
       const boxes = panels.map(({ panel }) => {
@@ -184,6 +189,13 @@
     update(unit, opt) {
       this.last = [unit, opt];
       const tab = TABS.find((t) => t.id === this.tab);
+      if (tab.custom) {
+        this.el.classList.add('custom');   // the panel is a list, not a grid of plots
+        this.plots = [];
+        this.sig = '';           // the plots are gone, so rebuild when a graph tab returns
+        if (this.custom) this.custom(this.el, unit);
+        return;
+      }
       const newest = unit && unit.history.t.length ? unit.history.t[unit.history.t.length - 1] : 0;
       const t0 = opt.windowMin ? newest - opt.windowMin * 60 : -Infinity;
       const panels = tab.panels.map((panel) => ({ panel, pd: this.panelData(panel, unit, t0) }));

@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "descent-ground"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "espflash",
  "humantime",
