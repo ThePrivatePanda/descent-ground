@@ -758,6 +758,7 @@
       const joinable = !u.live;
       return '<div class="runrow' + (u.label === view.sel ? ' sel' : '') + '">' +
         '<div class="runhead"><b data-pick="' + u.label + '">' + u.label + '</b>' +
+        (u.boot !== null && u.boot !== undefined ? '<span class="muted">boot ' + esc(u.boot) + '</span>' : '') +
         (u.live ? '<span class="st good">transmitting now</span>' : '<span class="muted">earlier run</span>') + '</div>' +
         '<div class="note">' + u.packets + ' packets, ' + u.missed + ' missed, ran for ' + span +
           (when ? ' — ' + esc(when) : '') + '</div>' +

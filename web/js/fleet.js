@@ -55,6 +55,7 @@
     for (const k of SERIES) history[k] = [];
     return {
       csid,
+      boot: null,             // which boot of the board this run is, when the dump says
       sourceRx: null,         // the source this run came from, for a log off a chip
       fromChip: false,        // read off flash, so counter-derived numbers do not apply
       label: String(csid),    // '64' while live, '64a' once retired
@@ -89,6 +90,7 @@
       this.sources = new Map();   // rx -> where its lines came from, if not a radio
       this.retired = new Map();   // label -> a generation that ended at a counter reset
       this.generations = new Map();  // csid -> how many of its generations have ended
+      this.currentBoot = null;       // the boot a dump is currently replaying
       this.recent = new Map();   // hex -> {t, csid}
       this.badCrc = 0;
       this.badLength = 0;
@@ -117,6 +119,8 @@
         // Not a radio. A flash dump has no RSSI or SNR by nature, and a replay of one
         // must not be mistaken for live reception in a screenshot.
         case 'source': r.source = ev.info; this.sources.set(rx, ev.info); return 'source';
+        // Which boot the records after this one belong to. The counter cannot tell us.
+        case 'boot': this.currentBoot = ev.info.n; return 'boot';
         case 'heartbeat': r.lastHbT = t; r.lastT = t; r.reportedOk = ev.ok; r.reportedErrors = ev.errors; return 'heartbeat';
         case 'rxerror': r.radioErrors++; r.lastT = t; return 'rxerror';
         case 'badlength': r.lastT = t; this.badLength++; return 'badlength';
@@ -157,6 +161,13 @@
       // each record, which the file does not carry yet.
       const fromChip = !!this.sources.get(rx);
       let u = this.units.get(csid);
+      // A dump that names its boots can be split properly: one run per boot, which the
+      // counter could never give us.
+      if (fromChip && u && u.boot !== null && this.currentBoot !== null && u.boot !== this.currentBoot) {
+        const old = this.retire(csid);
+        this.lastRetired = old ? old.label : null;
+        u = null;
+      }
       if (!fromChip && u && this.cfg.splitOnReset !== false && this.isReset(u, d.values.counter)) {
         const old = this.retire(csid);
         u = null;
@@ -170,6 +181,7 @@
         // it would be true, so none of it is claimed.
         u.sourceRx = rx;
         u.fromChip = true;
+        if (u.boot === null) u.boot = this.currentBoot;
         u.lastCounter = d.values.counter;
       } else {
         this.updateCounter(u, d.values.counter, t);

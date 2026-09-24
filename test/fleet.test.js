@@ -297,16 +297,25 @@ test('a real flash dump is one board, not a thousand runs', () => {
     kinds[k] = (kinds[k] || 0) + 1;
   }
   assert.strictEqual(kinds.source, 5, 'five boots, each naming itself');
+  assert.strictEqual(kinds.boot, 5, 'and each saying where it starts');
   assert.strictEqual(kinds.new, 6627, 'every record kept');
   assert.strictEqual(kinds.duplicate, undefined, 'nothing off a chip is a duplicate reception');
   assert.strictEqual(fleet.badCrc, 0);
-  assert.deepStrictEqual([...fleet.allUnits().keys()], ['7'], 'one board, one run');
 
-  const u = fleet.unit('7');
-  assert.strictEqual(u.packets, 6627);
-  assert.strictEqual(u.history.t.length, 6627, 'every record plotted');
-  assert.strictEqual(u.fromChip, true);
-  // Read off the counter, so meaningless here: claimed as nothing rather than as wrong.
-  assert.strictEqual(u.resets, 0);
-  assert.strictEqual(u.missed, 0);
+  // One run per boot, which only the boot markers can give: the counter cannot.
+  const runs = [...fleet.allUnits().values()];
+  assert.strictEqual(runs.length, 5);
+  assert.deepStrictEqual(runs.map((u) => u.csid), [7, 7, 7, 7, 7], 'one board throughout');
+  const byBoot = Object.fromEntries(runs.map((u) => [u.boot, u.packets]));
+  assert.deepStrictEqual(byBoot, { 0: 986, 1: 1065, 2: 2, 3: 954, 4: 3620 });
+  assert.strictEqual(runs.reduce((a, u) => a + u.packets, 0), 6627);
+  assert.strictEqual(runs.reduce((a, u) => a + u.history.t.length, 0), 6627, 'every record plotted');
+
+  for (const u of runs) {
+    assert.strictEqual(u.fromChip, true);
+    // Read off the transmission counter, so meaningless here: claimed as nothing
+    // rather than as something wrong.
+    assert.strictEqual(u.resets, 0);
+    assert.strictEqual(u.missed, 0);
+  }
 });

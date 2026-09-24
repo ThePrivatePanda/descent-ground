@@ -70,6 +70,11 @@
     if (parts[1] === 'RX') {
       return { kind: 'rxinfo', version: parts[2], info: keyValues(parts.slice(3)) };
     }
+    // #DG,BOOT,v1,n=<n> — the dump says where one boot ends and the next begins, which
+    // is the only thing that can separate them: the counter cannot.
+    if (parts[1] === 'BOOT') {
+      return { kind: 'boot', version: parts[2], info: keyValues(parts.slice(3)) };
+    }
     if (parts[1] === 'SRC') {
       return { kind: 'source', version: parts[2], info: keyValues(parts.slice(3)) };
     }

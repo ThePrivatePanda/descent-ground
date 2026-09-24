@@ -96,7 +96,8 @@ A boot that never got a GPS fix carries `time_source=start` instead of an anchor
 times were chosen by a human. The dashboard says so on screen, because once both are epoch
 milliseconds a guessed time axis looks exactly like a real one.
 
-A chip log is not a packet stream and is read differently: it is never split into runs, nothing in
+A dump that names its boots with `#DG,BOOT,v1,n=<n>` is split into one run per boot, which the
+counter alone could never do. Otherwise a chip log is not split into runs at all, nothing in
 it is discarded as a duplicate reception, and the columns that are read off the transmission
 counter — missed, restarts, Rx %, interval — show nothing rather than something wrong. The board
 logs at 20 Hz while the counter moves once per transmission, and every boot in a dump starts at the
