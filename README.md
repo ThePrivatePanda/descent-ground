@@ -36,6 +36,21 @@ The answer is remembered per board, not per socket, in `descent-ground-boards.tx
 so a replug or a different USB port needs no second answer and any new T-Beam takes one click.
 Disconnecting a receiver with ✕ keeps it shut until you plug it back in.
 
+## Building it yourself
+
+`tools/rebuild.sh` builds both binaries in `app/target`. The `post-commit` and `post-merge` git
+hooks run it in the background, so the paths people launch stay current.
+
+This matters more than it sounds. The dashboard is compiled into the binary, so a build left over
+from an earlier commit serves an older interface and nothing on screen says which. A build started
+from a checkout now checks the tree beside it and says so on startup:
+
+```
+WARNING: this build is older than /…/descent-ground/web — run: cargo build --release
+```
+
+A downloaded release has no source beside it and says nothing. Every run prints its version.
+
 ## Runs
 
 A ChipSat's counter starts again from 0 every time it reboots, so a reflash would otherwise mix old
