@@ -573,7 +573,11 @@
     }
     const more = e.target.getAttribute('data-gens');
     if (more) {
-      if (view.expanded.has(more)) view.expanded.delete(more); else view.expanded.add(more);
+      // Folding away a board that opened itself has to be remembered, or it reopens.
+      const auto = fleet().earlierRuns(Number(more)).length <= AUTO_OPEN_RUNS;
+      const isOpen = view.expanded.has(more) || (auto && !view.expanded.has('shut' + more));
+      view.expanded.delete(more); view.expanded.delete('shut' + more);
+      if (isOpen) view.expanded.add('shut' + more); else view.expanded.add(more);
       render(true);
       return;
     }
@@ -729,10 +733,16 @@
 
   // An earlier run of a board, shown under the live one. Deliberately thin: it is
   // history, and the row that matters is the one still transmitting.
+  const AUTO_OPEN_RUNS = 3;
+
   function earlierRow(f, u, t, rxTotal) {
     const span = u.firstT === null ? '—' : age(u.lastT - u.firstT);
     return '<tr class="gen' + (u.label === view.sel ? ' sel' : '') + '" data-label="' + u.label + '">' +
-      '<td class="csid">' + u.label + '</td>' +
+      // Actions go in the first cell. The fleet table is fourteen columns wide and
+      // scrolls sideways, so anything in the last cell is off the edge of the window.
+      '<td class="csid">' + u.label +
+        ' <button data-merge="' + u.label + '" class="act" title="It was not really a new run: join it to the one after it">join</button>' +
+        ' <button data-drop="' + u.label + '" class="act" title="Throw this run away">delete</button></td>' +
       '<td><span class="muted">earlier run</span></td>' +
       '<td class="r muted" title="Ended ' + esc(new Date(u.lastT).toLocaleString()) + '">' + age(t - u.lastT) + ' ago</td>' +
       '<td class="r muted">' + u.lastCounter + '</td>' +
@@ -741,9 +751,7 @@
       '<td class="r muted">' + fmt(f.rxPercent(u), 1) + '</td>' +
       '<td class="r muted">—</td>' +
       '<td class="muted">ran for ' + span + '</td>' +
-      '<td colspan="5" class="r">' +
-        '<button data-merge="' + u.label + '" class="quiet" title="It was not really a new run: join it to the one after it">Merge forward</button> ' +
-        '<button data-drop="' + u.label + '" class="quiet">Delete this run</button></td>' +
+      '<td colspan="5" class="muted">ended ' + esc(new Date(u.lastT).toLocaleTimeString()) + '</td>' +
       '</tr>';
   }
 
@@ -756,13 +764,19 @@
       const d = u.latest;
       const rssiCls = u.bestRssi < settings.weakRssiDbm ? ' serious' : '';
       const earlier = f.earlierRuns(u.csid);
-      const open = view.expanded.has(String(u.csid));
+      // One or two earlier runs is the bench case: a knocked cable, and the operator
+      // wants to join them. Show them without making anyone find a button first.
+      // Thirty of them is a night of logs, which stays folded.
+      const open = view.expanded.has(String(u.csid)) ||
+        (earlier.length <= AUTO_OPEN_RUNS && !view.expanded.has('shut' + u.csid));
       return '<tr data-label="' + u.label + '"' + (u.label === view.sel ? ' class="sel"' : '') + '>' +
         '<td class="csid">' + u.label +
-          (earlier.length ? ' <button class="gens" data-gens="' + u.csid + '" title="Earlier runs of this board, before it restarted">' +
-            (open ? '−' : '+') + earlier.length + '</button>' : '') +
-          (earlier.length ? ' <button class="gens" data-mergeall="' + u.csid + '" title="It was one run really: put every earlier run back into this one">' +
-            (earlier.length === 1 ? 'join' : 'join all') + '</button>' : '') + '</td>' +
+          (earlier.length ? ' <button class="act" data-gens="' + u.csid + '" title="Runs of this board that ended when it restarted">' +
+            (open ? 'hide' : earlier.length + ' earlier') + '</button>' : '') +
+          // While they are on screen each run has its own join, so this one would be a
+          // second way to do the same thing. It is for the folded case.
+          (earlier.length && !open ? ' <button class="act" data-mergeall="' + u.csid + '" title="It was one run really: put every earlier run back into this one">' +
+            (earlier.length === 1 ? 'join it' : 'join all') + '</button>' : '') + '</td>' +
         '<td>' + stateHtml(state) + (d.saturated ? '<span class="flag" title="Acceleration near the accelerometer limit">saturated</span>' : '') + '</td>' +
         '<td class="r">' + ageCell(f, u, a) + '</td>' +
         '<td class="r">' + u.lastCounter + '</td>' +
