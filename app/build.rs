@@ -25,6 +25,13 @@ fn main() {
         }
     }
 
+    // Stamped so the program can notice it is older than the tree it was built from.
+    let built = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("cargo:rustc-env=DG_BUILT={}", built);
+
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("firmware.rs");
     let body = match &newest {
         Some(p) => format!(

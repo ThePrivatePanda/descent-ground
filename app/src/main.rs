@@ -55,6 +55,10 @@ fn main() {
         }
     };
 
+    if let Some(stale) = opts::stale_against_source(&dir) {
+        println!("WARNING: {}", stale);
+    }
+
     let (log, warn) = logfile::Log::create(&dir);
     if let Some(w) = warn {
         println!("{}", w);
@@ -94,7 +98,7 @@ fn main() {
     if let Some(w) = urlfile::write(&dir, &url) {
         println!("{}", w);
     }
-    println!("DeSCENT Ground is at {}", url);
+    println!("DeSCENT Ground {} is at {}", env!("CARGO_PKG_VERSION"), url);
     match &log_path {
         Some(p) => println!("logging every line to {}", p.display()),
         None => println!("not logging to a file"),

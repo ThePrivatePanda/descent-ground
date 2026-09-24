@@ -28,6 +28,44 @@ descent-ground.conf beside the program:
   port = 8900
 ";
 
+// Running a build that is older than the dashboard next to it is the trap that cost an
+// evening: the app served a UI that no longer existed in the tree and nothing said so.
+// Only applies to a binary sitting in the build directory of a checkout; a downloaded
+// release has no source beside it and says nothing.
+pub fn stale_against_source(exe_dir: &Path) -> Option<String> {
+    let built: u64 = env!("DG_BUILT").parse().ok()?;
+    let web = ["../../../web", "../../../../web"]
+        .iter()
+        .map(|rel| exe_dir.join(rel))
+        .find(|p| p.join("index.html").is_file())?;
+    let newest = newest_mtime(&web)?;
+    if newest <= built {
+        return None;
+    }
+    Some(format!(
+        "this build is older than {} — run: cargo build --release",
+        web.canonicalize().unwrap_or(web.clone()).display()
+    ))
+}
+
+fn newest_mtime(dir: &Path) -> Option<u64> {
+    let mut newest = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(t) = e.metadata().and_then(|m| m.modified()) {
+                if let Ok(secs) = t.duration_since(std::time::UNIX_EPOCH) {
+                    newest = newest.max(secs.as_secs());
+                }
+            }
+        }
+    }
+    Some(newest)
+}
+
 pub struct Opts {
     pub open_browser: bool,
     pub help: bool,
