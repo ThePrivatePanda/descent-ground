@@ -253,6 +253,7 @@ impl Hub {
         self.approved.insert(key);
         self.dismissed.remove(port);
         self.complained.remove(port);
+        self.touch_board(port, Some("receiver"), None);
         self.save();
         let _ = self.tx.send(Event::Ports);
         Ok(())
@@ -266,6 +267,7 @@ impl Hub {
         if let Some(k) = self.open.iter().find(|(_, o)| o.port == port).map(|(k, _)| k.clone()) {
             self.close(&k);
         }
+        self.touch_board(port, Some("ignored"), None);
         self.save();
         let _ = self.tx.send(Event::Ports);
         Ok(())
@@ -285,6 +287,7 @@ impl Hub {
         } else {
             self.names.insert(key, name.to_string());
         }
+        self.touch_board(port, None, Some(name));
         self.save();
         let _ = self.tx.send(Event::Ports);
         Ok(())
@@ -334,6 +337,22 @@ impl Hub {
     pub fn end_probe(&mut self, port: &str) {
         self.probing.remove(port);
         let _ = self.tx.send(Event::Ports);
+    }
+
+    fn fingerprint(boards: &[Board]) -> String {
+        boards.iter().map(|b| format!("{}|{}|{}", b.port, b.state, b.name)).collect()
+    }
+
+    // Answering a decision straight away, rather than leaving the page to show what it
+    // showed before until the next scan two seconds later. That delay read as the first
+    // click doing nothing, so people clicked twice.
+    fn touch_board(&mut self, port: &str, state: Option<&str>, name: Option<&str>) {
+        for b in self.boards.iter_mut() {
+            if b.port == port {
+                if let Some(s) = state { b.state = s.to_string(); }
+                if let Some(n) = name { b.name = n.to_string(); }
+            }
+        }
     }
 
     pub fn boards(&self) -> Vec<Board> {
@@ -506,7 +525,14 @@ impl Hub {
                 self.identify = None;
             }
         }
+        // Plugging or unplugging a board that was never opened changes this list and
+        // nothing else, so without comparing it the page is not told and the operator
+        // watches a stale list. It is the whole point of the identify flow.
+        let before = Self::fingerprint(&self.boards);
         self.boards = boards;
+        if Self::fingerprint(&self.boards) != before {
+            let _ = self.tx.send(Event::Ports);
+        }
 
         let gone: Vec<String> = self.open.keys().filter(|k| !seen.contains(k)).cloned().collect();
         for k in gone {

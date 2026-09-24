@@ -178,8 +178,14 @@
 
   function renderSetup() {
     const body = $('setup-body');
+    // A redraw while someone is typing a name throws away what they typed, and the
+    // panel redraws whenever a board is seen. Put the caret back where it was.
+    const active = document.activeElement;
+    const typingIn = active && active.getAttribute && active.getAttribute('data-name');
+    const caret = typingIn ? [active.getAttribute('data-name'), active.value, active.selectionStart] : null;
     if (!setup.rows.length) {
       body.innerHTML = renderBoards();
+      restoreTyping(caret);
       return;
     }
     body.innerHTML = setup.rows.map((row) => {
@@ -189,12 +195,15 @@
         : row.confirm
           ? '<button data-flash="' + esc(row.port) + '" class="primary">Overwrite it</button><button data-cancel="' + esc(row.port) + '">Cancel</button>'
           : '<button data-ask="' + esc(row.port) + '"' + (setup.busy ? ' disabled' : '') + '>Flash</button>';
+      const keep = busy ? '' : '<label class="note"><input type="checkbox" data-backup="' + esc(row.port) + '"' +
+        (row.skipBackup ? '' : ' checked') + '> save the old firmware first (a few minutes)</label>';
       const sf = busy ? '' : '<label class="note">comes up on <select data-sf="' + esc(row.port) + '">' +
         [7, 8, 9, 10, 11, 12].map((n) => '<option value="' + n + '"' + (n === row.sf ? ' selected' : '') + '>SF' + n + '</option>').join('') +
         '</select></label>';
       return '<div class="setup-row"><div><b>' + esc(row.port) + '</b><span class="note"> — ' + esc(boardNow(row.port)) + '</span></div>' +
-        '<div class="setup-actions">' + sf + action + '</div>' + bar + '</div>';
+        '<div class="setup-actions">' + keep + sf + action + '</div>' + bar + '</div>';
     }).join('') + renderBoards();
+    restoreTyping(caret);
   }
 
   async function openSetup() {
@@ -245,6 +254,13 @@
       } catch (err) {
         toast('Could not name it: ' + (err.message || err));
       }
+      return;
+    }
+    const backup = e.target.getAttribute('data-backup');
+    if (backup) {
+      const r = setup.rows.find((x) => x.port === backup);
+      if (r) r.skipBackup = !e.target.checked;
+      renderSetup();
       return;
     }
     const port = e.target.getAttribute('data-sf');
@@ -303,10 +319,15 @@
     if (!go) return;
     const row = setup.rows.find((r) => r.port === go);
     if (!row) return;
-    setup.busy = go; setup.pct = 0; setup.note = 'saving the current firmware'; row.confirm = false;
+    setup.busy = go; setup.pct = 0; row.confirm = false;
+    // The whole chip is read before anything is erased. It is minutes, not seconds, so
+    // say so rather than let a still line look like a board that stopped answering.
+    setup.note = row.skipBackup
+      ? 'writing the firmware'
+      : "saving the board's current firmware first — this reads the whole chip and takes a few minutes";
     renderSetup();
     try {
-      const j = await hub.flash(go, row.sf);
+      const j = await hub.flash(go, row.sf, null, !row.skipBackup);
       toast('Flashed ' + go + ' on SF' + row.sf + '. Old firmware saved to ' + j.backup);
     } catch (err) {
       toast('Did not flash ' + go + ': ' + (err.message || err));
@@ -768,6 +789,15 @@
         '</div></div>';
     }).join('');
     el.innerHTML = '<div class="runs">' + head + rows + '</div>';
+  }
+
+  function restoreTyping(caret) {
+    if (!caret) return;
+    const box = $('setup-body').querySelector('[data-name="' + caret[0].replace(/"/g, '\\"') + '"]');
+    if (!box) return;
+    box.value = caret[1];
+    box.focus();
+    try { box.setSelectionRange(caret[2], caret[2]); } catch (e) { /* not a text box any more */ }
   }
 
   function earlierRow(f, u, t, rxTotal) {

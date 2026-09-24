@@ -18,6 +18,9 @@ pass a flag, so the file is the way to make it stick. Either way it prints its a
 open that when you want it. `--browser` overrides the file for one run, and `--help` lists the
 lot.
 
+Flashing saves the board's existing firmware first, which reads the whole chip and takes a few
+minutes with a running count. Untick **save the old firmware first** to skip it.
+
 If you cannot tell which port is which board, press **Which board is which?**, then unplug the
 board you mean and plug it back in. The app watches which port disappears and returns, and you give
 that one a name. Nothing is opened to do this, so it is safe to do with a ChipSat on the same

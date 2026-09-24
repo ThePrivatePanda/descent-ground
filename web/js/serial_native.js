@@ -120,9 +120,10 @@
     }
 
     // Writes the firmware in the app unless image names a file on this machine.
-    async flash(port, sf, image) {
+    async flash(port, sf, image, keepBackup) {
       const body = { port, sf: Number(sf) };
       if (image) body.image = image;
+      if (keepBackup === false) body.backup = 0;
       const r = await fetch('/api/flash', { method: 'POST', body: JSON.stringify(body) });
       const j = await r.json().catch(() => ({ ok: false, error: 'HTTP ' + r.status }));
       if (!j.ok) throw new Error(j.error || 'flash failed');

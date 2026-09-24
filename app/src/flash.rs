@@ -11,6 +11,8 @@ use std::time::Duration;
 
 include!(concat!(env!("OUT_DIR"), "/firmware.rs"));
 
+const BACKUP_BAUD: u32 = 460_800;
+const BACKUP_CHUNK: u32 = 256 * 1024;   // read in pieces so there is something to report
 const MIN_IMAGE: usize = 200_000;
 const MAX_IMAGE: usize = 4 * 1024 * 1024;
 
@@ -138,11 +140,14 @@ fn open_flasher(port: &str) -> Result<Flasher, String> {
         ResetBeforeOperation::DefaultReset,
         115_200,
     );
-    Flasher::connect(connection, true, true, false, None, None)
+    // Connect at the ROM's 115200 and then move up. The whole chip has to be read
+    // before anything is erased, and at 115200 that is four megabytes through a
+    // 11.5 kB/s pipe, about six minutes of looking hung.
+    Flasher::connect(connection, true, true, false, None, Some(BACKUP_BAUD))
         .map_err(|e| format!("could not talk to the board on {}: {}", port, e))
 }
 
-pub fn backup(port: &str, dir: &Path) -> Result<PathBuf, String> {
+pub fn backup(port: &str, dir: &Path, broadcast: &crate::ws::Broadcast) -> Result<PathBuf, String> {
     let mut flasher = open_flasher(port)?;
     let size = flasher
         .flash_detect()
@@ -158,9 +163,33 @@ pub fn backup(port: &str, dir: &Path) -> Result<PathBuf, String> {
             .replace('Z', "")
     );
     let path = dir.join(name);
-    flasher
-        .read_flash(0, bytes, 0x1000, 64, path.clone())
-        .map_err(|e| format!("could not read the board's firmware: {}", e))?;
+
+    // espflash reads to a file of its own and truncates it, so the chip is taken a
+    // piece at a time and the pieces appended. Without this the operator watches one
+    // unmoving line for several minutes and cannot tell it from a board that never
+    // answered.
+    let mut out = std::fs::File::create(&path).map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
+    let part_path = dir.join("descent-ground-backup-part.tmp");
+    let mut done: u32 = 0;
+    while done < bytes {
+        let n = BACKUP_CHUNK.min(bytes - done);
+        flasher
+            .read_flash(done, n, 0x1000, 64, part_path.clone())
+            .map_err(|e| format!("could not read the board's firmware at {:#x}: {}", done, e))?;
+        let part = std::fs::read(&part_path).map_err(|e| format!("cannot read back the piece: {}", e))?;
+        use std::io::Write;
+        out.write_all(&part).map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
+        done += n;
+        broadcast.send(&format!(
+            "{{\"type\":\"flash\",\"pct\":{},\"note\":\"saving the board's current firmware, {} of {} kB\"}}",
+            done as u64 * 100 / bytes as u64,
+            done / 1024,
+            bytes / 1024
+        ));
+    }
+    drop(out);
+    let _ = std::fs::remove_file(&part_path);
+
     let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     if written < bytes as u64 {
         return Err(format!(
@@ -209,23 +238,39 @@ pub fn handle_request(body: &str, ctx: &Arc<Ctx>) -> String {
         return err(&e);
     }
 
+    // Reading the whole chip takes minutes, and an operator who has already saved this
+    // board, or does not care what is on it, should be able to say so. Off by default:
+    // skipping is a choice, never the quiet path.
+    let keep_backup = crate::json::int_field(body, "backup").unwrap_or(1) != 0;
+
     if let Err(e) = ctx.hub.lock().unwrap().release_for_flash(&port) {
         return err(&e);
     }
 
-    let result = backup(&port, &ctx.dir).and_then(|saved| {
-        println!("saved the board's existing firmware to {}", saved.display());
-        ctx.broadcast.send(&format!(
-            "{{\"type\":\"flash\",\"pct\":0,\"note\":\"saved {}\"}}",
-            esc(&saved.to_string_lossy())
-        ));
-        write_image(&port, image, &ctx.broadcast).map(|()| saved)
-    });
+    let result = if keep_backup {
+        backup(&port, &ctx.dir, &ctx.broadcast).and_then(|saved| {
+            println!("saved the board's existing firmware to {}", saved.display());
+            ctx.broadcast.send(&format!(
+                "{{\"type\":\"flash\",\"pct\":0,\"note\":\"saved {}\"}}",
+                esc(&saved.to_string_lossy())
+            ));
+            write_image(&port, image, &ctx.broadcast).map(|()| saved)
+        })
+    } else {
+        println!("{}: not saving the existing firmware, you asked to skip it", port);
+        ctx.broadcast.send("{\"type\":\"flash\",\"pct\":0,\"note\":\"not saving the old firmware, you asked to skip it\"}");
+        write_image(&port, image, &ctx.broadcast).map(|()| std::path::PathBuf::new())
+    };
 
     ctx.hub.lock().unwrap().take_back(&port);
 
     match result {
         Ok(saved) => {
+            let saved_text = if saved.as_os_str().is_empty() {
+                String::from("not saved, you skipped it")
+            } else {
+                saved.to_string_lossy().to_string()
+            };
             // The board is rebooting. poll() reopens the port; the spreading factor
             // goes out once its boot header has arrived, because a command sent to a
             // booting board is lost.
@@ -240,11 +285,7 @@ pub fn handle_request(body: &str, ctx: &Arc<Ctx>) -> String {
                     let _ = hub.lock().unwrap().send(&k, &format!("#SET,sf,{}\n", sf));
                 }
             });
-            format!(
-                "{{\"ok\":true,\"backup\":\"{}\",\"sf\":{}}}",
-                esc(&saved.to_string_lossy()),
-                sf
-            )
+            format!("{{\"ok\":true,\"backup\":\"{}\",\"sf\":{}}}", esc(&saved_text), sf)
         }
         Err(e) => err(&e),
     }
