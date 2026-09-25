@@ -160,6 +160,26 @@
       return j;
     }
 
+    // Pull a flight log off a chip. The app runs whatever command the operator configured;
+    // keepFsw says whether the flight software now on the board is saved and put back.
+    async pull(port, keepFsw) {
+      const r = await fetch('/api/pull', {
+        method: 'POST',
+        body: JSON.stringify({ port, restore: keepFsw ? 1 : 0 }),
+      });
+      const j = await r.json().catch(() => ({ ok: false }));
+      if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
+      return j;
+    }
+
+    // Asked for rather than pushed, so closing the panel or reloading the tab during a
+    // pull that takes minutes does not lose it.
+    async pullState() {
+      const r = await fetch('/api/pull/state');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }
+
     async rotateLog() {
       const r = await fetch('/api/log/rotate', { method: 'POST' });
       const j = await r.json().catch(() => ({ ok: false }));

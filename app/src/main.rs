@@ -7,6 +7,7 @@ mod framing;
 mod json;
 mod logfile;
 mod opts;
+mod pull;
 mod serial;
 mod server;
 mod urlfile;
@@ -77,6 +78,8 @@ fn main() {
         log: log.clone(),
         dir: dir.clone(),
         port,
+        pull_command: opts.pull.clone(),
+        pull: pull::shared(),
     });
 
     std::thread::spawn({
@@ -105,6 +108,10 @@ fn main() {
     }
     // Ctrl-C ends the process outright, so the log is flushed every five seconds
     // rather than on the way out. The most a kill can cost is that tail.
+    match &opts.pull {
+        Some(c) => println!("pull command: {}", c),
+        None => println!("no pull command set; add a pull = line to descent-ground.conf to enable Pull from chip"),
+    }
     println!("Ctrl-C to stop. Closing the browser tab does not stop it.");
     if opts.open_browser {
         let _ = webbrowser::open(&url);

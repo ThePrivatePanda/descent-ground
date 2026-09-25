@@ -183,6 +183,8 @@ pub struct Ctx {
     pub log: Arc<Mutex<Option<Log>>>,
     pub dir: PathBuf,
     pub port: u16,
+    pub pull_command: Option<String>,
+    pub pull: crate::pull::Shared,
 }
 
 // The one way out, whoever asked. The log is flushed before the url file goes, because
@@ -456,6 +458,35 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
     }
 
     // Start a new log without restarting the app, for a second drop on the same day.
+    // A log off the app's own directory, so the page can replay what was written beside it
+    // without anyone standing up a second web server to hand it over. Read-only, this
+    // directory only, no walking out of it.
+    if let Some(name) = path.strip_prefix("/api/log/").filter(|n| *n != "rotate") {
+        let name = name.trim_start_matches('/');
+        let bad = name.is_empty()
+            || name.contains("..")
+            || name.contains('/')
+            || name.contains('\\');
+        if bad {
+            let _ = request.respond(Response::from_string("no").with_status_code(400));
+            return;
+        }
+        match std::fs::read(ctx.dir.join(name)) {
+            Ok(body) => {
+                let _ = request.respond(
+                    Response::from_data(body)
+                        .with_header(header("Content-Type", "text/plain; charset=utf-8")),
+                );
+            }
+            Err(e) => {
+                let _ = request.respond(
+                    Response::from_string(format!("{}: {}", name, e)).with_status_code(404),
+                );
+            }
+        }
+        return;
+    }
+
     if path == "/api/log/rotate" {
         let text = match logfile::rotate(&ctx.log, &ctx.dir) {
             Ok(p) => {
@@ -466,6 +497,79 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
         };
         let _ = request.respond(
             Response::from_string(text).with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    // Pulling a flight log off a chip. The app runs what it was told to run and shows what
+    // that says; it does not know an ST-Link from a cross compiler and is not going to.
+    if path == "/api/pull" {
+        let mut body = String::new();
+        let _ = std::io::Read::read_to_string(&mut request.as_reader(), &mut body);
+        let text = match &ctx.pull_command {
+            None => String::from("{\"ok\":false,\"error\":\"no pull command set. Put a line like  pull = /path/to/flash_replay.py --no-browser --port {port} --dir {out} {restore}  in descent-ground.conf beside the program.\"}"),
+            Some(template) => {
+                let port = crate::json::str_field(&body, "port").unwrap_or_default();
+                let restore = crate::json::int_field(&body, "restore").unwrap_or(1) != 0;
+                if port.is_empty() {
+                    String::from("{\"ok\":false,\"error\":\"no board in the request\"}")
+                } else {
+                    let command = crate::pull::fill(template, &port, &ctx.dir, restore);
+                    // The board is handed over the same way a flash takes it, so discovery
+                    // stays off the port while something else is talking to it.
+                    let released = ctx.hub.lock().unwrap().release_for_flash(&port);
+                    match released.and_then(|()| {
+                        crate::pull::start(
+                            &ctx.pull,
+                            command.clone(),
+                            port.clone(),
+                            restore,
+                            ctx.dir.clone(),
+                            ctx.broadcast.clone(),
+                        )
+                    }) {
+                        Ok(()) => {
+                            let hub = ctx.hub.clone();
+                            let pull = ctx.pull.clone();
+                            let port2 = port.clone();
+                            std::thread::spawn(move || {
+                                loop {
+                                    std::thread::sleep(std::time::Duration::from_millis(500));
+                                    if !pull.lock().map(|p| p.running).unwrap_or(false) {
+                                        break;
+                                    }
+                                }
+                                hub.lock().unwrap().take_back(&port2);
+                            });
+                            println!("pulling from {}: {}", port, command);
+                            format!("{{\"ok\":true,\"command\":\"{}\"}}", esc(&command))
+                        }
+                        Err(e) => {
+                            ctx.hub.lock().unwrap().take_back(&port);
+                            format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e))
+                        }
+                    }
+                }
+            }
+        };
+        let _ = request.respond(
+            Response::from_string(text).with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    // Asked for, not pushed: a reloaded page or a reopened panel picks the job back up.
+    if path == "/api/pull/state" {
+        let body = {
+            let p = ctx.pull.lock().unwrap();
+            let mut j = crate::pull::state_json(&p, crate::logfile::now_ms());
+            if ctx.pull_command.is_none() {
+                j = j.replace("\"ok\":true", "\"ok\":true,\"unconfigured\":true");
+            }
+            j
+        };
+        let _ = request.respond(
+            Response::from_string(body).with_header(header("Content-Type", "application/json")),
         );
         return;
     }

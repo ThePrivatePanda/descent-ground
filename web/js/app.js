@@ -144,6 +144,9 @@
         '<input class="nameit" data-name="' + esc(b.port) + '" value="' + esc(b.name || '') +
           '" placeholder="call it something" maxlength="40">' +
         '<button data-test="' + esc(b.port) + '" title="Open it for five seconds and show what it says. This can reset the board.">Test</button>' +
+        '<button data-pull="' + esc(b.port) + '" title="Read the flight log off this board">Pull from chip</button>' +
+        '<label class="note"><input type="checkbox" data-keepfsw="1"' + (pull.keepFsw ? ' checked' : '') +
+          '> keep the flight software that is on it</label>' +
         buttons + '</div>' +
       (b.testResult ? '<pre class="testout">' + esc(b.testResult) + '</pre>' : '') +
       '</div>';
@@ -156,8 +159,10 @@
       'socket, so a replug needs no second answer.</p>' +
       '<div class="setup-actions"><button id="btn-ident"' + (ident.watching ? ' disabled' : '') + '>' +
       (ident.watching ? 'Watching…' : 'Which board is which?') + '</button></div>' + identBanner();
-    if (!boards.length) return head + '<p class="note">Nothing plugged in.</p>';
-    return head + boards.map(boardRow).join('');
+    // The pull panel belongs on this screen whether or not a board is listed: a pull that
+    // is already running is the thing the operator came here to look at.
+    if (!boards.length) return head + '<p class="note">Nothing plugged in.</p>' + pullPanel();
+    return head + boards.map(boardRow).join('') + pullPanel();
   }
 
   async function pollIdentify() {
@@ -206,6 +211,76 @@
     restoreTyping(caret);
   }
 
+  // A pull runs for minutes, flashes the board twice and can fail at several points. It is
+  // polled rather than pushed so that closing this panel, or reloading the tab, picks the
+  // same job back up instead of leaving the operator wondering whether it is still going.
+  const pull = { state: null, timer: null, keepFsw: true };
+
+  async function pollPull() {
+    try {
+      pull.state = await hub.pullState();
+    } catch (e) {
+      return;
+    }
+    const s = pull.state;
+    if (s && !s.running && pull.timer) {
+      clearInterval(pull.timer);
+      pull.timer = null;
+      if (s.log) {
+        toast('Pulled ' + s.log + ' — opening it');
+        openServerLog(s.log);
+      } else if (s.error) {
+        toast('Pull failed: ' + s.error);
+      }
+    }
+    renderSetup();
+  }
+
+  function watchPull() {
+    if (pull.timer) return;
+    pull.timer = setInterval(pollPull, 1000);
+  }
+
+  // A log the app wrote beside itself, read back through its own server.
+  async function openServerLog(name) {
+    try {
+      const r = await fetch('api/log/' + encodeURIComponent(name));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+      const events = R.mergeFiles([R.parseLogFile(await r.text(), name, midnight.getTime())]);
+      if (!events.length) { toast('Nothing in ' + name); return; }
+      startReplay(events, [name]);
+    } catch (e) {
+      toast('Could not open ' + name + ': ' + (e.message || e));
+    }
+  }
+
+  function pullPanel() {
+    const s = pull.state;
+    if (!s) return '';
+    if (s.unconfigured && !s.running) {
+      return '<h3>Pull from chip</h3><p class="note">No pull command is set. Put a line like this in ' +
+        '<b>descent-ground.conf</b> beside the program, then restart it:<br>' +
+        '<code>pull = /path/to/flash_replay.py --no-browser --port {port} --dir {out} {restore}</code></p>';
+    }
+    const busy = s.running;
+    const bar = busy || s.pct
+      ? '<div class="bar-track"><div class="bar-fill" style="width:' + (s.pct || 0) + '%"></div></div>'
+      : '';
+    // The #DG, lines are what drives the bar and the line above; showing them again here
+    // is just noise over the tool's own output.
+    const tail = (s.lines || []).filter((l) => !l.replace(/^! /, '').startsWith('#DG,')).slice(-12).join('\n');
+    return '<h3>Pull from chip</h3>' +
+      (busy
+        ? '<p class="note">Pulling from <b>' + esc(s.port) + '</b> — ' + esc(s.note || '') +
+          ' (' + s.seconds + ' s). This flashes the board twice; leave it alone.</p>'
+        : '<p class="note">' + (s.error ? 'Last pull failed: ' + esc(s.error)
+            : s.log ? 'Last pull wrote ' + esc(s.log) : 'Reads the flight log off a board.') + '</p>') +
+      bar +
+      (tail ? '<pre class="testout">' + esc(tail) + '</pre>' : '') +
+      (!busy && s.log ? '<div class="setup-actions"><button data-openlog="' + esc(s.log) + '">Open ' + esc(s.log) + '</button></div>' : '');
+  }
+
   async function openSetup() {
     $('setup').hidden = false;
     $('setup-body').innerHTML = '<p class="note">Looking for boards…</p>';
@@ -214,6 +289,7 @@
       setup.note = m.note || '';
       renderSetup();
     };
+    pollPull();
     try {
       const j = await hub.candidates();
       setup.rows = (j.candidates || []).map((c) => ({ port: c.port, sf: 9, confirm: false }));
@@ -264,6 +340,11 @@
       }
       return;
     }
+    if (e.target.getAttribute('data-keepfsw')) {
+      pull.keepFsw = e.target.checked;
+      renderSetup();
+      return;
+    }
     const backup = e.target.getAttribute('data-backup');
     if (backup) {
       const r = setup.rows.find((x) => x.port === backup);
@@ -287,6 +368,21 @@
       renderSetup();
       return;
     }
+    const doPull = e.target.getAttribute('data-pull');
+    if (doPull) {
+      try {
+        await hub.pull(doPull, pull.keepFsw);
+        toast('Pulling from ' + doPull + (pull.keepFsw ? '' : ' — not keeping the flight software'));
+        watchPull();
+        await pollPull();
+      } catch (err) {
+        toast('Could not start the pull: ' + (err.message || err));
+        await pollPull();
+      }
+      return;
+    }
+    const openLog = e.target.getAttribute('data-openlog');
+    if (openLog) { openServerLog(openLog); return; }
     const test = e.target.getAttribute('data-test');
     if (test) {
       const b = (hub.boards || []).find((x) => x.port === test);
@@ -468,6 +564,11 @@
     startReplay(events, names);
   }
   openFromUrl();
+
+  // A pull started before this page loaded is still the operator's pull.
+  if (hub.native) {
+    hub.pullState().then((s) => { pull.state = s; if (s.running) { watchPull(); $('setup').hidden = false; renderSetup(); } }).catch(() => {});
+  }
 
   function startReplay(events, names) {
     stopPlay();

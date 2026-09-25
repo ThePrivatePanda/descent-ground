@@ -100,6 +100,31 @@ For just the dashboard page, with no executable:
 - Firefox and Safari can open saved logs but cannot connect to a receiver (no Web Serial).
 - A hosted copy is at https://ground.privatepanda.co.
 
+## Pulling a log off a chip
+
+**Pull from chip** on a board row reads that board's flight log and opens it, without a terminal.
+The app does not know how to talk to an ST-Link or drive a cross compiler and does not try: it runs
+the command named in `descent-ground.conf` and shows what that command says.
+
+```
+pull = /path/to/flash_replay.py --no-browser --port {port} --dir {out} {restore}
+```
+
+`{port}` is the board you picked in the dashboard, so nothing goes hunting by opening every serial
+device. `{out}` is the app's own directory, where it can read the result back. `{restore}` becomes
+`--restore` or `--no-restore` from the **keep the flight software that is on it** tick box, and
+`{restore01}` gives `1` or `0` for a tool that wants a value instead of a flag.
+
+Keeping the flight software means reading the image that is on the board now, saving it, and
+writing that same image back afterwards. It must not be a fresh build of whatever the repo holds:
+those are not the same thing, and swapping one for the other silently is how a board comes back
+from the bench running something nobody chose.
+
+A pull takes minutes and flashes the board twice, so it is a job rather than a request. Closing the
+panel or reloading the page picks the same pull back up, with its step, elapsed time and the tool's
+output. If the command prints `#DG,STEP,3/5,reading the chip` or `#DG,PCT,42` those drive the
+status line and the bar; anything else is shown as it comes.
+
 ## Replaying a flash dump
 
 **Open log** also takes a log written from a ChipSat's flash, exported by
