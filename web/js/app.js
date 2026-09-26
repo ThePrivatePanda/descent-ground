@@ -12,10 +12,11 @@
   let rxCount = 0;
 
   const view = {
-    sel: null, paused: false, sort: 'attention', expanded: new Set(),
+    sel: null, paused: false, sort: 'attention', expanded: new Set(), mode: 'live',
+    sels: { live: null, replay: null },
     replay: null,   // {events, pos, clock, playing, speed, fleet, names}
   };
-  const fleet = () => (view.replay ? view.replay.fleet : live);
+  const fleet = () => (view.mode === 'replay' && view.replay ? view.replay.fleet : live);
   const now = () => (view.replay ? view.replay.clock : Date.now());
   const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 
@@ -131,38 +132,38 @@
   function boardRow(b) {
     const is = b.state === 'receiver';
     const mine = ident.found === b.port;
-    const buttons = is
-      ? '<button data-not="' + esc(b.port) + '">Not a receiver</button>'
-      : '<button data-yes="' + esc(b.port) + '" class="primary">This is a receiver</button>' +
+    const decide = is
+      ? '<button data-not="' + esc(b.port) + '">Stop reading it</button>'
+      : '<button data-yes="' + esc(b.port) + '">Read this one</button>' +
         (b.state === 'ignored' ? '' : '<button data-not="' + esc(b.port) + '">Leave it alone</button>');
-    const title = b.name ? esc(b.name) : esc(b.port);
-    return '<div class="setup-row' + (mine ? ' found' : '') + '">' +
-      '<div><b>' + title + '</b><span class="note">' + (b.name ? ' — ' + esc(b.port) : '') +
-        ' — ' + esc(b.label) + ', USB ' + esc(b.usb) + (b.serial ? ', serial ' + esc(b.serial) : '') +
-        ' — ' + esc(STATE_WORDS[b.state] || b.state) + '</span></div>' +
-      '<div class="setup-actions">' +
+    const detail = [b.label, 'USB ' + b.usb, b.serial ? 'serial ' + b.serial : '', b.port]
+      .filter(Boolean).map(esc).join(', ');
+    return '<div class="board' + (mine ? ' found' : '') + '">' +
+      '<div class="board-id">' +
+        '<b>' + esc(b.name || b.port) + '</b>' +
+        '<span class="board-state ' + esc(b.state) + '">' + esc(STATE_WORDS[b.state] || b.state) + '</span>' +
+      '</div>' +
+      '<div class="board-detail">' + detail + '</div>' +
+      '<div class="board-do">' +
         '<input class="nameit" data-name="' + esc(b.port) + '" value="' + esc(b.name || '') +
-          '" placeholder="call it something" maxlength="40">' +
-        '<button data-test="' + esc(b.port) + '" title="Open it for five seconds and show what it says. This can reset the board.">Test</button>' +
-        '<button data-pull="' + esc(b.port) + '" title="Read the flight log off this board">Pull from chip</button>' +
-        '<label class="note"><input type="checkbox" data-keepfsw="1"' + (pull.keepFsw ? ' checked' : '') +
-          '> keep the flight software that is on it</label>' +
-        buttons + '</div>' +
+          '" placeholder="name it" maxlength="40">' +
+        '<button data-test="' + esc(b.port) + '" title="Listen to it for five seconds without writing to it. Opening a port can reset the board.">Listen</button>' +
+        decide + '</div>' +
       (b.testResult ? '<pre class="testout">' + esc(b.testResult) + '</pre>' : '') +
       '</div>';
   }
 
   function renderBoards() {
     const boards = hub.boards || [];
-    const head = '<h3>Boards</h3><p class="note">The app opens a board only once you say it is a receiver, ' +
-      'because opening a port can reset the board on the other end. It remembers the board, not the ' +
-      'socket, so a replug needs no second answer.</p>' +
-      '<div class="setup-actions"><button id="btn-ident"' + (ident.watching ? ' disabled' : '') + '>' +
-      (ident.watching ? 'Watching…' : 'Which board is which?') + '</button></div>' + identBanner();
+    const head = '<h3>Boards</h3>' +
+      '<p class="note">Nothing is opened until you say what it is: opening a port resets the board on ' +
+      'the other end. Answers are remembered per board, so moving one to another socket changes nothing.</p>' +
+      '<div class="board-do"><button id="btn-ident"' + (ident.watching ? ' disabled' : '') + '>' +
+      (ident.watching ? 'Waiting for a replug' : 'Which board is which?') + '</button></div>' + identBanner();
     // The pull panel belongs on this screen whether or not a board is listed: a pull that
     // is already running is the thing the operator came here to look at.
-    if (!boards.length) return head + '<p class="note">Nothing plugged in.</p>' + pullPanel();
-    return head + boards.map(boardRow).join('') + pullPanel();
+    if (!boards.length) return head + '<p class="note">Nothing plugged in.</p>' + pullPanel() + logsPanel();
+    return head + boards.map(boardRow).join('') + pullPanel() + logsPanel();
   }
 
   async function pollIdentify() {
@@ -203,7 +204,7 @@
       const keep = busy ? '' : '<label class="note"><input type="checkbox" data-backup="' + esc(row.port) + '"' +
         (row.skipBackup ? '' : ' checked') + '> save the old firmware first (a few minutes)</label>';
       const sf = busy ? '' : '<label class="note">comes up on <select data-sf="' + esc(row.port) + '">' +
-        [7, 8, 9, 10, 11, 12].map((n) => '<option value="' + n + '"' + (n === row.sf ? ' selected' : '') + '>SF' + n + '</option>').join('') +
+        [6, 7, 8, 9, 10, 11, 12].map((n) => '<option value="' + n + '"' + (n === row.sf ? ' selected' : '') + '>SF' + n + '</option>').join('') +
         '</select></label>';
       return '<div class="setup-row"><div><b>' + esc(row.port) + '</b><span class="note"> — ' + esc(boardNow(row.port)) + '</span></div>' +
         '<div class="setup-actions">' + keep + sf + action + '</div>' + bar + '</div>';
@@ -228,6 +229,7 @@
       pull.timer = null;
       if (s.log) {
         toast('Pulled ' + s.log + ' — opening it');
+        if (hub.native) hub.logs().then((l) => { logList = l; }).catch(() => {});
         openServerLog(s.log);
       } else if (s.error) {
         toast('Pull failed: ' + s.error);
@@ -255,30 +257,75 @@
     }
   }
 
+  // Logs written beside the app: the one just pulled, the one being recorded now, and
+  // every earlier one. Open replays it here; Save writes it wherever you keep things.
+  let logList = [];
+
+  function bytes(n) {
+    return n > 1024 * 1024 ? (n / 1048576).toFixed(1) + ' MB'
+      : n > 1024 ? Math.round(n / 1024) + ' kB' : n + ' B';
+  }
+
+  function logsPanel() {
+    if (!hub.native) return '';
+    if (!logList.length) return '<h3>Logs</h3><p class="note">No logs written yet.</p>';
+    return '<h3>Logs</h3><p class="note">Written beside the program. Open replays one here; ' +
+      'Save keeps a copy wherever you want it.</p>' +
+      logList.map((l) => '<div class="board"><div class="board-id"><b>' + esc(l.name) + '</b>' +
+        '<span class="board-state">' + bytes(l.bytes) + '</span></div>' +
+        '<div class="board-do">' +
+          '<button data-openlog="' + esc(l.name) + '">Open</button>' +
+          '<a class="button" download="' + esc(l.name) + '" href="api/log/' + encodeURIComponent(l.name) + '">Save</a>' +
+        '</div></div>').join('');
+  }
+
   function pullPanel() {
     const s = pull.state;
     if (!s) return '';
-    if (s.unconfigured && !s.running) {
-      return '<h3>Pull from chip</h3><p class="note">No pull command is set. Put a line like this in ' +
-        '<b>descent-ground.conf</b> beside the program, then restart it:<br>' +
-        '<code>pull = /path/to/flash_replay.py --no-browser --port {port} --dir {out} {restore}</code></p>';
-    }
+    const boards = hub.boards || [];
     const busy = s.running;
-    const bar = busy || s.pct
-      ? '<div class="bar-track"><div class="bar-fill" style="width:' + (s.pct || 0) + '%"></div></div>'
-      : '';
-    // The #DG, lines are what drives the bar and the line above; showing them again here
-    // is just noise over the tool's own output.
-    const tail = (s.lines || []).filter((l) => !l.replace(/^! /, '').startsWith('#DG,')).slice(-12).join('\n');
-    return '<h3>Pull from chip</h3>' +
-      (busy
-        ? '<p class="note">Pulling from <b>' + esc(s.port) + '</b> — ' + esc(s.note || '') +
-          ' (' + s.seconds + ' s). This flashes the board twice; leave it alone.</p>'
-        : '<p class="note">' + (s.error ? 'Last pull failed: ' + esc(s.error)
-            : s.log ? 'Last pull wrote ' + esc(s.log) : 'Reads the flight log off a board.') + '</p>') +
-      bar +
-      (tail ? '<pre class="testout">' + esc(tail) + '</pre>' : '') +
-      (!busy && s.log ? '<div class="setup-actions"><button data-openlog="' + esc(s.log) + '">Open ' + esc(s.log) + '</button></div>' : '');
+
+    if (busy) {
+      const steps = (s.steps || []).slice(-6).join('\n');
+      return '<h3>Pulling the flight log</h3>' +
+        '<p class="note">From <b>' + esc(s.board || '') + '</b>, ' + s.seconds + ' s so far. ' +
+        'The board is flashed twice. Leave it plugged in.</p>' +
+        '<div class="bar-track"><div class="bar-fill" style="width:' + (s.pct || 0) + '%"></div></div>' +
+        '<p class="step">' + esc(s.note || '') + '</p>' +
+        (steps ? '<pre class="testout">' + esc(steps) + '</pre>' : '');
+    }
+
+    // What happened last time stays on screen: a pull that failed after reflashing leaves a
+    // board running the wrong firmware, and that must not vanish with a toast.
+    let last = '';
+    if (s.error) {
+      last = '<p class="outcome bad">That pull failed: ' + esc(s.error) + '</p>' +
+        (s.keepFsw && !s.restored
+          ? '<p class="outcome bad">The flight software was not put back. The board is still running the dump firmware' +
+            (s.savedFsw ? '; the image that was on it is saved as ' + esc(s.savedFsw) : '') + '.</p>'
+          : '');
+    } else if (s.log) {
+      last = '<p class="outcome">Last pull wrote ' + esc(s.log) +
+        (s.restored ? ', and put the flight software back.' : '.') + '</p>' +
+        '<div class="board-do"><button data-openlog="' + esc(s.log) + '">Open ' + esc(s.log) + '</button></div>';
+    }
+
+    const chooser = boards.length
+      ? '<label class="field">Board' +
+          '<select id="pull-board">' +
+          boards.map((b) => '<option value="' + esc(b.port) + '">' + esc(b.name || b.port) + '</option>').join('') +
+          '</select></label>'
+      : '<p class="note">Nothing is plugged in.</p>';
+
+    return '<h3>Pull the flight log</h3>' +
+      '<p class="note">Reads a ChipSat\'s flash through its debug probe and opens it here. ' +
+      'It writes the dump firmware to the board and puts the flight software back afterwards.</p>' +
+      last + chooser +
+      '<label class="field check"><input type="checkbox" data-keepfsw="1"' + (pull.keepFsw ? ' checked' : '') +
+        '> Save the flight software that is on it and put it back</label>' +
+      (boards.length
+        ? '<div class="board-do"><button id="btn-pull" class="primary">Pull the flight log</button></div>'
+        : '');
   }
 
   async function openSetup() {
@@ -290,12 +337,13 @@
       renderSetup();
     };
     pollPull();
+    if (hub.native) hub.logs().then((l) => { logList = l; renderSetup(); }).catch(() => {});
     try {
       const j = await hub.candidates();
       setup.rows = (j.candidates || []).map((c) => ({ port: c.port, sf: 9, confirm: false }));
-      $('setup-note').textContent = j.firmware
-        ? 'Writes ' + j.firmware + '. The board\'s current firmware is saved beside the app first.'
-        : 'This build has no firmware in it.';
+      $('setup-note').textContent = setup.rows.length && j.firmware
+        ? 'Flashing a T-Beam writes ' + j.firmware + ', after saving what is on it.'
+        : '';
     } catch (e) {
       setup.rows = [];
       $('setup-note').textContent = 'Could not ask the app: ' + (e.message || e);
@@ -368,7 +416,9 @@
       renderSetup();
       return;
     }
-    const doPull = e.target.getAttribute('data-pull');
+    const doPull = e.target.id === 'btn-pull'
+      ? (document.getElementById('pull-board') || {}).value
+      : e.target.getAttribute('data-pull');
     if (doPull) {
       try {
         await hub.pull(doPull, pull.keepFsw);
@@ -570,25 +620,118 @@
     hub.pullState().then((s) => { pull.state = s; if (s.running) { watchPull(); $('setup').hidden = false; renderSetup(); } }).catch(() => {});
   }
 
+  // Replaying and listening are different jobs and the screen says which one it is doing.
+  // Live chrome goes away rather than sitting there looking clickable next to a log from
+  // last week.
+  // Two views over two different fleets. Switching keeps both: the receivers carry on
+  // while a log is being read, and the log stays where it was while live is watched.
+  function showView(mode) {
+    if (mode === 'replay' && !view.replay) return;
+    view.sels[view.mode] = view.sel;
+    view.mode = mode;
+    view.sel = view.sels[mode];
+    document.body.dataset.mode = mode;
+    $('view-live').setAttribute('aria-selected', String(mode === 'live'));
+    $('view-replay').setAttribute('aria-selected', String(mode === 'replay'));
+    $('view-replay').disabled = !view.replay;
+    $('view-replay').textContent = view.replay ? 'Replay: ' + view.replay.names.join(', ') : 'Replay';
+    $('replay').hidden = mode !== 'replay';
+    render(true);
+  }
+
   function startReplay(events, names) {
     stopPlay();
-    view.replay = { events, pos: 0, clock: events[0].t, playing: false, speed: +$('rp-speed').value, fleet: new F.Fleet(settings), names };
+    // Scrubbing backwards used to throw the fleet away and feed every event in again.
+    // Copies are kept along the way so a rewind restarts from the nearest one; the cost
+    // of dragging then stops depending on how long the log is.
+    view.replay = {
+      events, pos: 0, clock: events[0].t, playing: false, speed: +$('rp-speed').value,
+      // A log is finite and already on disk. Capping its history would quietly drop the
+      // start of a long flight from every graph, which is the part worth looking at.
+      fleet: new F.Fleet(Object.assign({}, settings, { maxPoints: Infinity, retainMin: 0 })), names,
+      checks: [], every: Math.max(250, Math.ceil(events.length / 12)),
+    };
     view.sel = null;
-    $('replay').hidden = false;
     $('rp-pos').max = events.length;
-    seek(events.length);   // show the whole log first; scrub or play from the start
-    toast('Opened ' + names.join(', ') + ': ' + events.length + ' lines, ' + view.replay.fleet.total + ' packets');
+    showView('replay');
+    // Feeding a long log in one go blocks the page for seconds with nothing on screen.
+    // It goes in a slice at a time, the count keeps moving, and the browser stays awake.
+    fillTo(events.length, () => {
+      toast('Opened ' + names.join(', ') + ': ' + events.length + ' lines, ' +
+        view.replay.fleet.total + ' packets');
+    });
   }
 
   function seek(pos) {
     const r = view.replay;
-    if (pos < r.pos) { r.fleet = new F.Fleet(settings); r.pos = 0; }
-    while (r.pos < pos) { const e = r.events[r.pos++]; ingestLine(r.fleet, e.rx, e.text, e.t); }
+    // The nearest copy at or before the target, whichever direction the handle moved: a
+    // long jump forward is as expensive as a rewind if it replays from where we happen
+    // to be standing.
+    let from = null;
+    for (const c of r.checks) if (c.pos <= pos && (!from || c.pos > from.pos)) from = c;
+    if (pos < r.pos && !from) { r.fleet = new F.Fleet(settings); r.pos = 0; }
+    if (from && from.pos > r.pos) { r.fleet.restore(from.state); r.pos = from.pos; }
+    else if (pos < r.pos && from) { r.fleet.restore(from.state); r.pos = from.pos; }
+    while (r.pos < pos) {
+      const e = r.events[r.pos++];
+      ingestLine(r.fleet, e.rx, e.text, e.t);
+      if (r.pos % r.every === 0 && !r.checks.some((c) => c.pos === r.pos)) {
+        r.checks.push({ pos: r.pos, state: r.fleet.snapshot() });
+      }
+    }
     r.clock = r.pos ? r.events[r.pos - 1].t : r.events[0].t;
     $('rp-pos').value = r.pos;
     $('rp-time').textContent = new Date(r.clock).toTimeString().slice(0, 8);
     render(true);
   }
+
+  // Reading a log in slices, so a long one arrives visibly instead of freezing the page.
+  // Twelve milliseconds a slice leaves the rest of the frame to draw.
+  function fillTo(target, done) {
+    const r = view.replay;
+    if (!r) return;
+    const total = r.events.length;
+    const step = () => {
+      if (view.replay !== r) return;   // the log was closed under us
+      const until = performance.now() + 12;
+      while (r.pos < target && performance.now() < until) {
+        const e = r.events[r.pos++];
+        ingestLine(r.fleet, e.rx, e.text, e.t);
+        if (r.pos % r.every === 0 && !r.checks.some((c) => c.pos === r.pos)) {
+          r.checks.push({ pos: r.pos, state: r.fleet.snapshot() });
+        }
+      }
+      r.clock = r.pos ? r.events[r.pos - 1].t : r.events[0].t;
+      $('rp-pos').value = r.pos;
+      if (r.pos < target) {
+        $('rp-time').textContent = 'reading ' + r.pos.toLocaleString() + ' of ' + total.toLocaleString();
+        requestAnimationFrame(step);
+        return;
+      }
+      $('rp-time').textContent = new Date(r.clock).toTimeString().slice(0, 8);
+      render(true);
+      if (done) done();
+    };
+    step();
+  }
+
+  // Dragging fires far faster than a rebuild can finish, so the work is coalesced to one
+  // per frame and the time under the handle keeps up on its own.
+  let seekWanted = null;
+  function seekSoon(pos) {
+    const r = view.replay;
+    if (!r) return;
+    $('rp-time').textContent = new Date(r.events[Math.max(0, Math.min(pos, r.events.length) - 1)].t)
+      .toTimeString().slice(0, 8);
+    if (seekWanted !== null) { seekWanted = pos; return; }
+    seekWanted = pos;
+    requestAnimationFrame(() => {
+      const want = seekWanted;
+      seekWanted = null;
+      if (want !== null) seek(want);
+    });
+  }
+
 
   function stopPlay() {
     if (view.replay) view.replay.playing = false;
@@ -609,14 +752,25 @@
       const keepClock = r.clock;
       if (pos !== r.pos) seek(pos);
       r.clock = keepClock;
-      render();
+      // seek() already redrew if the position moved, so there is nothing to throttle
+      // here. What matters is not asking for the next tick until this one is done.
       if (r.pos >= r.events.length) stopPlay();
     }, 100);
   });
   $('rp-speed').addEventListener('change', (e) => { if (view.replay) view.replay.speed = +e.target.value; });
-  $('rp-pos').addEventListener('input', (e) => { stopPlay(); seek(+e.target.value); });
+  // Each rebuild costs hundreds of milliseconds on a long log, and input fires far
+  // faster than that, so dragging queued work the page could never finish. The time
+  // under the handle follows the drag; the fleet catches up when it is let go.
+  $('rp-pos').addEventListener('input', (e) => {
+    stopPlay();
+    const r = view.replay;
+    if (!r) return;
+    const at = Math.max(0, Math.min(+e.target.value, r.events.length) - 1);
+    $('rp-time').textContent = new Date(r.events[at].t).toTimeString().slice(0, 8);
+  });
+  $('rp-pos').addEventListener('change', (e) => { stopPlay(); seek(+e.target.value); });
   $('rp-exit').addEventListener('click', () => {
-    stopPlay(); view.replay = null; view.sel = null; $('replay').hidden = true; render(true);
+    stopPlay(); view.replay = null; view.sels.replay = null; showView('live');
   });
 
   // ---------- fleet controls ----------
@@ -1034,10 +1188,12 @@
       '</div>';
   }
 
-  // Values 7-12 are what we fly. A board reporting anything else keeps its own number
-  // rather than showing the nearest option, since this select is the board's truth.
+  // SF6 through 12. Six only works because the packet is a fixed 55 bytes, which the
+  // receiver is told at boot; the radio cannot read a header at that rate. A board
+  // reporting something outside the range keeps its own number rather than showing the
+  // nearest option, since this select is the board's truth.
   function sfSelect(k, sf) {
-    const values = [7, 8, 9, 10, 11, 12];
+    const values = [6, 7, 8, 9, 10, 11, 12];
     if (!values.includes(Number(sf))) values.push(Number(sf));
     const opts = values.sort((a, b) => a - b)
       .map((n) => '<option value="' + n + '"' + (n === Number(sf) ? ' selected' : '') + '>SF' + n + '</option>').join('');
@@ -1097,7 +1253,7 @@
       $('receivers').insertAdjacentHTML('beforeend', '<span class="rx"><span class="meta">' +
         esc(onSf.map(([k, r]) => rxName(k) + ' on SF' + r.info.sf).join(', ')) + '</span></span>');
     }
-    $('mode').textContent = view.replay ? 'Replaying ' + view.replay.names.join(', ') : (recorder.lines ? recorder.lines + ' lines this session' : '');
+    $('mode').textContent = view.replay ? '' : (recorder.lines ? recorder.lines + ' lines this session' : '');
   }
   $('receivers').addEventListener('click', (e) => {
     const k = e.target.dataset.close;
@@ -1158,7 +1314,13 @@
     }
   }
 
-  setInterval(() => { if (!view.replay || !view.replay.playing) render(); }, 250);
+  // Live needs redrawing because time passes: ages grow, units go stale. A paused replay
+  // is a still picture of a moment that has already happened, and redrawing it four times
+  // a second over thousands of points is what made the page impossible to click.
+  setInterval(() => {
+    if (view.mode === 'replay') return;
+    render();
+  }, 250);
   render(true);
 
   // Offline copy for the hosted site. file:// pages don't need it.
@@ -1167,5 +1329,11 @@
   }
 
   // Handle for manual checks in the console.
+  // Late, because switching views draws the whole dashboard and that reaches helpers
+  // defined further down this file.
+  $('view-live').addEventListener('click', () => showView('live'));
+  $('view-replay').addEventListener('click', () => showView('replay'));
+  showView('live');
+
   window.DGApp = { live, view, hub, recorder, autosave, startReplay, seek, settings: () => settings };
 })();

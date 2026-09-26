@@ -12,19 +12,23 @@
 <body>
 <header class="bar">
   <span class="brand">DeSCENT <span>Ground</span></span>
-  <button id="btn-connect" class="primary" title="Pick a T-Beam serial port">Connect receiver</button>
-  <button id="btn-setup" class="quiet" title="Write the receiver firmware to a T-Beam" hidden>Set up receiver</button>
-  <div id="receivers" class="receivers"></div>
+  <nav class="views" role="tablist" aria-label="View">
+    <button id="view-live" role="tab" aria-selected="true">Live</button>
+    <button id="view-replay" role="tab" aria-selected="false" disabled title="Open a log or pull one off a chip">Replay</button>
+  </nav>
+  <button id="btn-connect" class="primary live-only" title="Pick a T-Beam serial port">Connect receiver</button>
+  <button id="btn-setup" class="quiet live-only" title="Boards, receivers, and pulling a flight log" hidden>Hardware</button>
+  <div id="receivers" class="receivers live-only"></div>
   <span class="spacer"></span>
   <span id="mode" class="mode"></span>
-  <div class="recpanel" id="recpanel" role="group" aria-label="Recording">
+  <div class="recpanel live-only" id="recpanel" role="group" aria-label="Recording">
     <span id="rec-state" class="rec-state">Not recording</span>
     <button id="rec-start" title="Record every line from every connected receiver to a file">Start</button>
     <button id="rec-pause" disabled>Pause</button>
     <button id="rec-stop" disabled>Stop</button>
     <span id="rec-info" class="rec-info"></span>
   </div>
-  <button id="btn-save" class="quiet" title="Download everything received from all receivers since this page opened">Save session</button>
+  <button id="btn-save" class="quiet live-only" title="Download everything received from all receivers since this page opened">Save session</button>
   <label class="button quiet" title="Open saved logs, including old lab CSV logs">Open log<input id="file-open" type="file" multiple accept=".txt,.log,.csv,.tsv" hidden></label>
   <button id="btn-settings" class="quiet" title="Graph, status and saving settings">Settings</button>
   <button id="btn-theme" class="quiet" title="Switch light / dark" aria-label="Switch light or dark theme">◑</button>
@@ -38,7 +42,7 @@
 </div>
 
 <div id="replay" class="replaybar" hidden>
-  <button id="rp-play">Play</button>
+  <button id="rp-play" class="primary">Play</button>
   <select id="rp-speed" title="Replay speed">
     <option value="1">1×</option><option value="10">10×</option><option value="60" selected>60×</option><option value="600">600×</option>
   </select>
@@ -134,7 +138,7 @@
 
 <aside id="setup" class="drawer" hidden>
   <div class="drawer-head">
-    <h2>Set up receiver</h2>
+    <h2>Hardware</h2>
     <span class="spacer"></span>
     <button id="setup-close">Close</button>
   </div>

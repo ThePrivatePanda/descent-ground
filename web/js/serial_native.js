@@ -165,7 +165,7 @@
     async pull(port, keepFsw) {
       const r = await fetch('/api/pull', {
         method: 'POST',
-        body: JSON.stringify({ port, restore: keepFsw ? 1 : 0 }),
+        body: JSON.stringify({ port, keepFsw: keepFsw ? 1 : 0 }),
       });
       const j = await r.json().catch(() => ({ ok: false }));
       if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
@@ -178,6 +178,13 @@
       const r = await fetch('/api/pull/state');
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
+    }
+
+    // Every log sitting beside the app, newest first.
+    async logs() {
+      const r = await fetch('api/logs');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return (await r.json()).logs || [];
     }
 
     async rotateLog() {

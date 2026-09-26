@@ -24,7 +24,8 @@
   };
   const LOST_MS = DEFAULTS.lostMin * 60000;
   const STALE_DEFAULT_MS = 30000;      // before the interval is known
-  const WRAP_SLACK = 1000;             // counter 65xxx -> small = wrap, not reset
+  const WRAP_SLACK = 1000;
+  const SLACK = 2000;                 // points kept past the cap before one tidy-up             // counter 65xxx -> small = wrap, not reset
   const INTERVAL_SAMPLES = 15;
 
   const SERIES = ['counter', 'rssi', 'snr'].concat(
@@ -81,7 +82,7 @@
 
     setConfig(cfg) {
       this.cfg = Object.assign({}, DEFAULTS, cfg);
-      for (const u of this.units.values()) this.trimHistory(u);
+      for (const u of this.units.values()) this.trimHistory(u, true);
     }
 
     clear() {
@@ -282,6 +283,42 @@
       return n;
     }
 
+    // Everything that makes this fleet what it is, copied deeply enough to put back.
+    // Replay scrubs backwards by restoring the nearest earlier copy instead of feeding
+    // every event again from the start, which is what made a long log unscrubbable.
+    snapshot() {
+      return structuredClone({
+        units: this.units,
+        retired: this.retired,
+        generations: this.generations,
+        receivers: this.receivers,
+        sources: this.sources,
+        recent: this.recent,
+        hidden: this.hidden,
+        currentBoot: this.currentBoot,
+        total: this.total,
+        duplicates: this.duplicates,
+        badCrc: this.badCrc,
+        badLength: this.badLength,
+      });
+    }
+
+    restore(state) {
+      const c = structuredClone(state);
+      this.units = c.units;
+      this.retired = c.retired;
+      this.generations = c.generations;
+      this.receivers = c.receivers;
+      this.sources = c.sources;
+      this.recent = c.recent;
+      this.hidden = c.hidden;
+      this.currentBoot = c.currentBoot;
+      this.total = c.total;
+      this.duplicates = c.duplicates;
+      this.badCrc = c.badCrc;
+      this.badLength = c.badLength;
+    }
+
     // Runs of one board that ended at a restart, oldest first.
     earlierRuns(csid) {
       return [...this.retired.values()].filter((u) => u.csid === csid)
@@ -374,14 +411,21 @@
       this.trimHistory(u);
     }
 
-    // Drop history older than the retention time and beyond the point cap.
-    trimHistory(u) {
+    // Drop history older than the retention time and beyond the point cap. Pass exact to
+    // cut to the cap on the spot; ingest lets it drift instead, for the reason below.
+    trimHistory(u, exact = false) {
       const cut = (h) => {
-        let n = Math.max(0, h.t.length - this.cfg.maxPoints);
+        let n = 0;
         if (this.cfg.retainMin > 0 && h.t.length) {
           const oldest = h.t[h.t.length - 1] - this.cfg.retainMin * 60;
           while (n < h.t.length && h.t[n] < oldest) n++;
         }
+        // The retention window decides what the charts show, so it is honoured exactly.
+        // The cap is only a memory guard, and cutting one point off the front of every
+        // series on every packet moves all twenty thousand of the others each time. Past
+        // the cap that is milliseconds per packet, which is what makes a long log crawl.
+        const over = h.t.length - n - this.cfg.maxPoints;
+        if (over > 0 && (exact || over >= SLACK)) n += over;
         if (n > 0) for (const k in h) h[k].splice(0, n);
       };
       cut(u.history);

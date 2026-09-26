@@ -255,8 +255,6 @@ table { border-collapse: collapse; width: 100%; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
 /* ---------- set up receiver ---------- */
-.setup-row { padding: 10px 0; border-bottom: 1px solid var(--rule); }
-.setup-actions { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .bar-track { height: 4px; background: var(--rule); border-radius: 2px; margin: 8px 0 4px; }
 .bar-fill { height: 4px; background: var(--accent); border-radius: 2px; transition: width 120ms linear; }
 
@@ -271,7 +269,6 @@ tr.gen td { background: var(--sunk); font-size: 12px; }
 tr.gen td.csid { font-weight: 500; padding-left: 20px; }
 .ident { margin: 6px 0; padding: 8px 10px; border-radius: 4px; background: var(--sunk); font-size: 12px; }
 .ident.found { background: var(--accent-soft); }
-.setup-row.found { box-shadow: inset 3px 0 0 var(--accent); padding-left: 8px; }
 .nameit { width: 150px; font-size: 12px; padding: 2px 6px; }
 .testout { margin: 6px 0 0; padding: 6px 8px; background: var(--sunk); border-radius: 4px; font-size: 11px; white-space: pre-wrap; max-height: 120px; overflow: auto; }
 .act { font-size: 11px; padding: 1px 6px; margin-left: 4px; border-radius: 3px; }
@@ -283,5 +280,44 @@ tr.gen td.csid { white-space: nowrap; }
 .runrow.sel { box-shadow: inset 3px 0 0 var(--accent); background: var(--sunk); }
 .runhead { display: flex; align-items: center; gap: 8px; }
 .runhead b { font-size: 15px; cursor: pointer; }
-.runs .setup-actions { margin-top: 8px; }
-.charts.custom { display: block; }
+.runs .charts.custom { display: block; }
+
+/* ---------- hardware drawer ---------- */
+/* Boards are listed like instrument channels: what it is, what it is doing, what you can
+   do about it. Separated by a rule rather than boxed, so the list reads as one list. */
+.drawer-body h3 { margin: 18px 0 2px; }
+.drawer-body h3:first-child { margin-top: 6px; }
+
+.board { padding: 10px 0 12px; border-bottom: 1px solid var(--rule); }
+.board.found { box-shadow: inset 3px 0 0 var(--accent); padding-left: 9px; }
+.board-id { display: flex; align-items: baseline; gap: 8px; }
+.board-id b { font-size: 14px; }
+.board-state { font-size: 12px; color: var(--ink-3); }
+.board-state.receiver { color: var(--good); }
+.board-detail { font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
+.board-do { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.nameit { width: 116px; font-size: 12px; padding: 3px 7px; }
+
+/* One field per line: a chooser and a consequence should not compete for a row. */
+.field { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12.5px; color: var(--ink-2); }
+.field select { flex: 1; min-width: 0; }
+.field.check { align-items: flex-start; gap: 7px; line-height: 1.35; }
+.field.check input { margin-top: 2px; }
+
+/* What a pull is doing now, and what the last one left behind. */
+.step { margin: 6px 0 0; font-size: 12.5px; }
+.outcome { margin: 10px 0 0; font-size: 12.5px; padding-left: 9px; box-shadow: inset 3px 0 0 var(--ink-3); }
+.outcome.bad { box-shadow: inset 3px 0 0 var(--critical); color: var(--ink); }
+
+/* ---------- live or replay, never half of each ---------- */
+body[data-mode="replay"] .live-only { display: none; }
+
+/* ---------- the two views ---------- */
+/* One is live receivers, the other a log. The tab says which fleet is on screen. */
+.views { display: flex; gap: 2px; margin-left: 4px; }
+.views button {
+  font-size: 12.5px; padding: 4px 11px; border-radius: 4px;
+  background: transparent; border: 1px solid transparent; color: var(--ink-2);
+}
+.views button[aria-selected="true"] { background: var(--sunk); border-color: var(--rule); color: var(--ink); }
+.views button[disabled] { color: var(--ink-3); }
