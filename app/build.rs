@@ -32,6 +32,29 @@ fn main() {
         .unwrap_or(0);
     println!("cargo:rustc-env=DG_BUILT={}", built);
 
+    // The ChipSat dump sketch, carried so a pull needs nothing installed. It has no
+    // version of its own, so its hash is compiled in and shown: a copy that has fallen
+    // behind the sketch is then visible instead of being guessed at.
+    let chip = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../chipsat/firmware/flash_dump.bin");
+    println!("cargo:rerun-if-changed={}", chip.display());
+    let (chip_decl, chip_hash) = match std::fs::read(&chip) {
+        Ok(bytes) => {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for b in &bytes {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x1000_0000_01b3);
+            }
+            (
+                format!("pub static CHIPSAT_DUMP: Option<&[u8]> = Some(include_bytes!({:?}));\n", chip),
+                format!("pub static CHIPSAT_DUMP_ID: &str = {:?};\n", format!("{:016x}", h)),
+            )
+        }
+        Err(_) => (
+            String::from("pub static CHIPSAT_DUMP: Option<&[u8]> = None;\n"),
+            String::from("pub static CHIPSAT_DUMP_ID: &str = \"\";\n"),
+        ),
+    };
+
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("firmware.rs");
     let body = match &newest {
         Some(p) => format!(
@@ -41,5 +64,5 @@ fn main() {
         ),
         None => String::from("pub static IMAGE: Option<&[u8]> = None;\npub static IMAGE_NAME: &str = \"\";\n"),
     };
-    std::fs::write(out, body).unwrap();
+    std::fs::write(out, format!("{}{}{}", body, chip_decl, chip_hash)).unwrap();
 }

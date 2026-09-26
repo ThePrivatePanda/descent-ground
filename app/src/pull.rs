@@ -1,52 +1,55 @@
-// Pulling a flight log off a ChipSat's flash, from the dashboard instead of a terminal.
+// Pulling a flight log off a ChipSat, entirely inside this program.
 //
-// The app does not know how to talk to an ST-Link or drive a cross compiler, and it is
-// not going to learn: that knowledge lives in the flight repo and belongs there. What it
-// does here is run the command the operator named once, show what that command is saying
-// while it runs, and open the log it leaves behind.
+// Nothing outside the binary is needed: the debug probe is driven directly, the dump
+// sketch is carried inside, and the log the board prints is parsed here. No toolchain,
+// no scripts, no sibling checkout.
 //
-// A pull takes minutes, flashes the board twice and can fail at several points, so it is
-// a job rather than a request: the state survives closing the panel, reloading the tab,
-// and losing the websocket. Only the process itself dying ends it.
+// The order matters and is not obvious. The serial port is opened and read BEFORE the
+// board is touched, because the board talks continuously and a port nobody is reading
+// overflows; and the whole printing is collected before anything is decided, because a
+// port opened mid-printing catches the tail of an older dump. Which printing was the real
+// one is settled afterwards, from the text.
 use crate::json::esc;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::io::Read;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub const MAX_LINES: usize = 400;
+const BAUD: u32 = 115200;
+const QUIET_MS: u128 = 8_000;      // silence after the last line before giving up on more
+const DEADLINE_MS: u128 = 600_000; // a whole pull, including two flashes
 
 #[derive(Clone)]
 pub struct Pull {
     pub running: bool,
-    pub restore: bool,
-    pub port: String,
-    pub command: String,
+    pub keep_fsw: bool,
+    pub board: String,
     pub started_ms: u128,
     pub finished_ms: u128,
-    pub lines: Vec<String>,
+    pub steps: Vec<String>,
     pub note: String,
     pub pct: u32,
-    pub exit: Option<i32>,
+    pub saved_fsw: Option<String>,
     pub log: Option<String>,
     pub error: Option<String>,
+    pub restored: bool,
 }
 
 impl Pull {
     fn idle() -> Self {
         Pull {
             running: false,
-            restore: true,
-            port: String::new(),
-            command: String::new(),
+            keep_fsw: true,
+            board: String::new(),
             started_ms: 0,
             finished_ms: 0,
-            lines: Vec::new(),
+            steps: Vec::new(),
             note: String::new(),
             pct: 0,
-            exit: None,
+            saved_fsw: None,
             log: None,
             error: None,
+            restored: false,
         }
     }
 }
@@ -57,74 +60,6 @@ pub fn shared() -> Shared {
     Arc::new(Mutex::new(Pull::idle()))
 }
 
-// {port} is the board the operator picked in the dashboard, so nothing has to go hunting
-// for it by opening every serial device. {out} is where the app can read the result back.
-//
-// {restore} says whether the flight software that is on the board right now should be read
-// off, kept, and written back afterwards. It must be the running image, never a fresh build
-// of whatever the repo happens to hold: those are not the same thing, and putting the second
-// one back is a silent substitution nobody asked for. Two spellings because CLIs differ —
-// {restore} for a flag, {restore01} for a value.
-pub fn fill(template: &str, port: &str, out: &Path, restore: bool) -> String {
-    template
-        .replace("{port}", port)
-        .replace("{out}", &out.to_string_lossy())
-        .replace("{restore}", if restore { "--restore" } else { "--no-restore" })
-        .replace("{restore01}", if restore { "1" } else { "0" })
-}
-
-// The two tools already share the #DG, prefix for lines that mean something rather than
-// just saying something, so a step or a percentage rides in on the same convention.
-pub fn read_marker(line: &str) -> Option<(Option<u32>, String)> {
-    let rest = line.trim().strip_prefix("#DG,")?;
-    let mut parts = rest.split(',');
-    match parts.next()? {
-        "STEP" => {
-            let where_ = parts.next().unwrap_or("").to_string();
-            let what = parts.collect::<Vec<_>>().join(",");
-            Some((None, if where_.is_empty() { what } else { format!("{} {}", where_, what) }))
-        }
-        "PCT" => {
-            let n: u32 = parts.next()?.trim().parse().ok()?;
-            Some((Some(n.min(100)), String::new()))
-        }
-        _ => None,
-    }
-}
-
-// A log the pull left behind: the newest ground log in the output directory that was not
-// there when it started. Deciding by name rather than by parsing the command's chatter,
-// because the chatter is not ours to depend on.
-pub fn newest_log(dir: &Path, after_ms: u128) -> Option<String> {
-    let mut best: Option<(u128, String)> = None;
-    for e in std::fs::read_dir(dir).ok()?.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".log") {
-            continue;
-        }
-        let t = e
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        if t + 2000 < after_ms {
-            continue;   // older than this pull, so not its doing
-        }
-        let head = std::fs::read_to_string(e.path())
-            .map(|s| s.lines().next().unwrap_or("").to_string())
-            .unwrap_or_default();
-        if !head.starts_with("# descent-ground log") {
-            continue;
-        }
-        if best.as_ref().map(|(bt, _)| t > *bt).unwrap_or(true) {
-            best = Some((t, name));
-        }
-    }
-    best.map(|(_, n)| n)
-}
-
 pub fn state_json(p: &Pull, now_ms: u128) -> String {
     let secs = if p.started_ms == 0 {
         0
@@ -132,129 +67,213 @@ pub fn state_json(p: &Pull, now_ms: u128) -> String {
         let end = if p.running { now_ms } else { p.finished_ms };
         end.saturating_sub(p.started_ms) / 1000
     };
-    let lines: Vec<String> = p.lines.iter().map(|l| format!("\"{}\"", esc(l))).collect();
+    let steps: Vec<String> = p.steps.iter().map(|l| format!("\"{}\"", esc(l))).collect();
     format!(
-        "{{\"ok\":true,\"running\":{},\"restore\":{},\"port\":\"{}\",\"command\":\"{}\",\"seconds\":{},\"pct\":{},\"note\":\"{}\",\"lines\":[{}],\"exit\":{},\"log\":{},\"error\":{}}}",
+        "{{\"ok\":true,\"running\":{},\"keepFsw\":{},\"board\":\"{}\",\"seconds\":{},\"pct\":{},\"note\":\"{}\",\"steps\":[{}],\"savedFsw\":{},\"log\":{},\"restored\":{},\"error\":{}}}",
         p.running,
-        p.restore,
-        esc(&p.port),
-        esc(&p.command),
+        p.keep_fsw,
+        esc(&p.board),
         secs,
         p.pct,
         esc(&p.note),
-        lines.join(","),
-        match p.exit { Some(c) => c.to_string(), None => String::from("null") },
-        match &p.log { Some(l) => format!("\"{}\"", esc(l)), None => String::from("null") },
+        steps.join(","),
+        match &p.saved_fsw { Some(s) => format!("\"{}\"", esc(s)), None => String::from("null") },
+        match &p.log { Some(s) => format!("\"{}\"", esc(s)), None => String::from("null") },
+        p.restored,
         match &p.error { Some(e) => format!("\"{}\"", esc(e)), None => String::from("null") },
     )
 }
 
-// Runs the command with a shell, because what the operator wrote in the settings file is a
-// command line with arguments and not an argv the app could guess how to split.
-pub fn start(
-    shared: &Shared,
-    command: String,
-    port: String,
-    restore: bool,
-    dir: PathBuf,
-    broadcast: crate::ws::Broadcast,
-) -> Result<(), String> {
-    {
-        let p = shared.lock().map_err(|_| "pull state is wedged".to_string())?;
-        if p.running {
-            return Err(format!("a pull is already running on {}", p.port));
-        }
-    }
-    let started = crate::logfile::now_ms();
+fn say(shared: &Shared, broadcast: &crate::ws::Broadcast, pct: u32, note: &str) {
     {
         let mut p = shared.lock().unwrap();
-        *p = Pull::idle();
-        p.running = true;
-        p.restore = restore;
-        p.port = port.clone();
-        p.command = command.clone();
-        p.started_ms = started;
-        p.note = String::from("starting");
+        p.pct = pct;
+        p.note = note.to_string();
+        p.steps.push(note.to_string());
     }
+    broadcast.send(&format!(
+        "{{\"type\":\"pull\",\"pct\":{},\"note\":\"{}\"}}",
+        pct,
+        esc(note)
+    ));
+}
 
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .current_dir(&dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            let mut p = shared.lock().unwrap();
-            p.running = false;
-            p.error = Some(format!("could not run it: {}", e));
-            format!("could not run it: {}", e)
-        })?;
+// Reads the console into one string while something else flashes the board. Stops when
+// the board has been quiet for a while or the deadline passes; the caller decides from
+// the text whether a whole dump arrived.
+struct Listener {
+    text: Arc<Mutex<String>>,
+    stop: Arc<AtomicBool>,
+    last_ms: Arc<Mutex<u128>>,
+}
 
-    let out = child.stdout.take();
-    let err = child.stderr.take();
-    for (stream, tag) in [(out.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>), ""),
-                          (err.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>), "! ")] {
-        let Some(stream) = stream else { continue };
-        let shared = shared.clone();
-        let broadcast = broadcast.clone();
-        let tag = tag.to_string();
+impl Listener {
+    fn start(port_name: &str) -> Result<Listener, String> {
+        let mut port = serialport::new(port_name, BAUD)
+            .timeout(std::time::Duration::from_millis(200))
+            .open()
+            .map_err(|e| format!("{}: {}", port_name, e))?;
+        let text = Arc::new(Mutex::new(String::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let last_ms = Arc::new(Mutex::new(crate::logfile::now_ms()));
+        let (t2, s2, l2) = (text.clone(), stop.clone(), last_ms.clone());
         std::thread::spawn(move || {
-            for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                let mut p = shared.lock().unwrap();
-                if let Some((pct, note)) = read_marker(&line) {
-                    if let Some(n) = pct { p.pct = n; }
-                    if !note.is_empty() { p.note = note; }
-                } else {
-                    p.note = line.clone();
+            let mut buf = [0u8; 4096];
+            while !s2.load(Ordering::Relaxed) {
+                match port.read(&mut buf) {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                        t2.lock().unwrap().push_str(&chunk);
+                        *l2.lock().unwrap() = crate::logfile::now_ms();
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(_) => break,   // unplugged, or the probe reset it out from under us
                 }
-                p.lines.push(format!("{}{}", tag, line));
-                if p.lines.len() > MAX_LINES {
-                    p.lines.remove(0);
-                }
-                let frame = format!(
-                    "{{\"type\":\"pull\",\"pct\":{},\"note\":\"{}\"}}",
-                    p.pct,
-                    esc(&p.note)
-                );
-                drop(p);
-                broadcast.send(&frame);
             }
         });
+        Ok(Listener { text, stop, last_ms })
     }
 
-    let shared2 = shared.clone();
-    std::thread::spawn(move || {
-        let status = child.wait();
-        let mut p = shared2.lock().unwrap();
-        p.running = false;
-        p.finished_ms = crate::logfile::now_ms();
-        match status {
-            Ok(s) => {
-                p.exit = s.code();
-                if !s.success() {
-                    p.error = Some(format!("the pull command exited {}", s.code().unwrap_or(-1)));
-                    p.note = String::from("failed");
-                } else {
-                    p.note = String::from("done");
-                    p.pct = 100;
-                }
-            }
-            Err(e) => {
-                p.error = Some(format!("lost the pull command: {}", e));
-                p.note = String::from("failed");
-            }
+    fn quiet_for(&self) -> u128 {
+        crate::logfile::now_ms().saturating_sub(*self.last_ms.lock().unwrap())
+    }
+
+    fn take(&self) -> String {
+        self.text.lock().unwrap().clone()
+    }
+
+    fn done(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+pub struct Job {
+    pub shared: Shared,
+    pub broadcast: crate::ws::Broadcast,
+    pub dir: PathBuf,
+    pub port_name: String,
+    pub probe: Option<String>,
+    pub keep_fsw: bool,
+    pub dump_image: &'static [u8],
+}
+
+pub fn start(job: Job) -> Result<(), String> {
+    {
+        let p = job.shared.lock().map_err(|_| "pull state is wedged".to_string())?;
+        if p.running {
+            return Err(format!("already pulling from {}", p.board));
         }
-        p.log = newest_log(&dir, started);
-        let frame = format!(
-            "{{\"type\":\"pull\",\"pct\":{},\"note\":\"{}\",\"done\":true}}",
-            p.pct,
-            esc(&p.note)
-        );
-        drop(p);
-        broadcast.send(&frame);
-    });
+    }
+    {
+        let mut p = job.shared.lock().unwrap();
+        *p = Pull::idle();
+        p.running = true;
+        p.keep_fsw = job.keep_fsw;
+        p.board = job.port_name.clone();
+        p.started_ms = crate::logfile::now_ms();
+    }
+    std::thread::spawn(move || run(job));
     Ok(())
+}
+
+fn run(job: Job) {
+    let Job { shared, broadcast, dir, port_name, probe, keep_fsw, dump_image } = job;
+    let probe = probe.as_deref();
+    let started = crate::logfile::now_ms();
+
+    let outcome = (|| -> Result<(), String> {
+        // Listening first. The board is talking already, and a port nobody reads fills up.
+        say(&shared, &broadcast, 2, "listening to the board");
+        let listener = Listener::start(&port_name)?;
+
+        let mut saved: Option<PathBuf> = None;
+        if keep_fsw {
+            say(&shared, &broadcast, 5, "saving the flight software that is on the board");
+            let hint = port_name.rsplit('/').next().unwrap_or("board").to_string();
+            let path = crate::stm32::save_firmware(probe, &dir, &hint, &broadcast)?;
+            shared.lock().unwrap().saved_fsw =
+                path.file_name().map(|n| n.to_string_lossy().to_string());
+            saved = Some(path);
+        }
+
+        say(&shared, &broadcast, 30, "writing the dump firmware");
+        crate::stm32::write_firmware(probe, dump_image, &broadcast)?;
+        crate::stm32::reset_and_run(probe)?;
+
+        say(&shared, &broadcast, 45, "reading the log off the chip");
+        let text = loop {
+            let text = listener.take();
+            let parsed = crate::dump::parse(&text);
+            if parsed.complete() {
+                break text;
+            }
+            if listener.quiet_for() > QUIET_MS {
+                break text;
+            }
+            if crate::logfile::now_ms() - started > DEADLINE_MS {
+                break text;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        };
+        listener.done();
+
+        let parsed = crate::dump::parse(&text);
+        if !parsed.complete() {
+            // Keep what arrived. A short dump is still evidence, and throwing it away
+            // means doing the whole thing again to look at it.
+            let raw = dir.join(format!("descent-ground-dump-{}.txt", started));
+            let _ = std::fs::write(&raw, &text);
+            return Err(format!(
+                "the board never finished printing its log; {} bytes of it are in {}",
+                text.len(),
+                raw.file_name().unwrap_or_default().to_string_lossy()
+            ));
+        }
+
+        say(&shared, &broadcast, 80, &format!("read {} records from {} boots", parsed.records.len(), parsed.boots().len()));
+        let name = format!("descent-ground-chip-{}.log", started);
+        std::fs::write(dir.join(&name), crate::dump::to_log(&parsed, &port_name))
+            .map_err(|e| format!("could not write {}: {}", name, e))?;
+        shared.lock().unwrap().log = Some(name);
+
+        if let Some(path) = saved {
+            say(&shared, &broadcast, 90, "putting the flight software back");
+            let bytes = std::fs::read(&path)
+                .map_err(|e| format!("cannot read back {}: {}", path.display(), e))?;
+            crate::stm32::write_firmware(probe, &bytes, &broadcast)?;
+            crate::stm32::reset_and_run(probe)?;
+            shared.lock().unwrap().restored = true;
+        }
+        Ok(())
+    })();
+
+    let mut p = shared.lock().unwrap();
+    p.running = false;
+    p.finished_ms = crate::logfile::now_ms();
+    match outcome {
+        Ok(()) => {
+            p.pct = 100;
+            p.note = if p.keep_fsw && p.restored {
+                String::from("done, flight software back on the board")
+            } else if p.keep_fsw {
+                String::from("done, but the flight software was NOT put back")
+            } else {
+                String::from("done, the board is still running the dump firmware")
+            };
+        }
+        Err(e) => {
+            p.note = String::from("failed");
+            p.error = Some(e);
+        }
+    }
+    let frame = format!(
+        "{{\"type\":\"pull\",\"pct\":{},\"note\":\"{}\",\"done\":true}}",
+        p.pct,
+        esc(&p.note)
+    );
+    drop(p);
+    broadcast.send(&frame);
 }
 
 #[cfg(test)]
@@ -262,64 +281,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_board_and_the_output_go_into_the_command() {
-        let out = Path::new("/tmp/dg");
-        assert_eq!(
-            fill("pull.py --port {port} --dir {out}", "/dev/ttyACM1", out, true),
-            "pull.py --port /dev/ttyACM1 --dir /tmp/dg"
-        );
-        // A template that names neither is still run; it just gets no help.
-        assert_eq!(fill("pull.py", "/dev/x", out, true), "pull.py");
-    }
-
-    #[test]
-    fn keeping_the_running_flight_software_is_asked_for_either_way() {
-        let out = Path::new("/tmp/dg");
-        assert_eq!(fill("p {restore}", "/dev/x", out, true), "p --restore");
-        assert_eq!(fill("p {restore}", "/dev/x", out, false), "p --no-restore");
-        assert_eq!(fill("p --keep={restore01}", "/dev/x", out, true), "p --keep=1");
-        assert_eq!(fill("p --keep={restore01}", "/dev/x", out, false), "p --keep=0");
-    }
-
-    #[test]
-    fn a_step_or_a_percent_is_read_off_the_shared_prefix() {
-        assert_eq!(read_marker("#DG,STEP,3/5,reading the chip"), Some((None, String::from("3/5 reading the chip"))));
-        assert_eq!(read_marker("#DG,PCT,42"), Some((Some(42), String::new())));
-        assert_eq!(read_marker("#DG,PCT,900"), Some((Some(100), String::new())));
-        // Anything else is just a line to show.
-        assert_eq!(read_marker("flashing bootloader"), None);
-        assert_eq!(read_marker("#DG,SRC,v1,kind=flash"), None);
-    }
-
-    #[test]
     fn the_state_a_reloaded_page_reads_back() {
         let mut p = Pull::idle();
         p.running = true;
-        p.port = "/dev/ttyACM1".into();
-        p.command = "pull.py --port \"x\"".into();
+        p.board = "/dev/ttyACM1".into();
         p.started_ms = 1_000_000;
-        p.pct = 37;
-        p.note = "reading the chip".into();
-        p.lines.push("record 1".into());
-        let j = state_json(&p, 1_090_000);
-        assert!(j.contains("\"running\":true"), "{}", j);
-        assert!(j.contains("\"seconds\":90"), "{}", j);
-        assert!(j.contains("\"pct\":37"));
-        assert!(j.contains("\"exit\":null"));
-        assert!(j.contains("\\\"x\\\""), "a quote in the command must not break the json: {}", j);
+        p.pct = 45;
+        p.note = "reading the log off the chip".into();
+        p.steps.push("saving the flight software \"first\"".into());
+        let j = state_json(&p, 1_075_000);
+        assert!(j.contains("\"running\":true"));
+        assert!(j.contains("\"seconds\":75"), "{}", j);
+        assert!(j.contains("\"keepFsw\":true"));
+        assert!(j.contains("\"restored\":false"));
+        assert!(j.contains("\\\"first\\\""), "a quote must not break the json: {}", j);
     }
 
     #[test]
-    fn only_a_ground_log_written_by_this_pull_counts() {
-        let dir = std::env::temp_dir().join(format!("dg-pull-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("notes.txt"), "# descent-ground log v1\n").unwrap();
-        std::fs::write(dir.join("other.log"), "nothing like ours\n").unwrap();
-        assert_eq!(newest_log(&dir, 0), None, "wrong name and wrong contents are both out");
-        std::fs::write(dir.join("pulled.log"), "# descent-ground log v1 from flash\n1\trx\tPKT\n").unwrap();
-        assert_eq!(newest_log(&dir, 0).as_deref(), Some("pulled.log"));
-        // A log from before the pull started is not its doing.
-        assert_eq!(newest_log(&dir, crate::logfile::now_ms() + 600_000), None);
-        let _ = std::fs::remove_dir_all(&dir);
+    fn a_finished_pull_stops_counting() {
+        let mut p = Pull::idle();
+        p.started_ms = 1_000_000;
+        p.finished_ms = 1_030_000;
+        assert!(state_json(&p, 9_999_999).contains("\"seconds\":30"));
     }
 }

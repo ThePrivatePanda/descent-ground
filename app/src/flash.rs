@@ -132,6 +132,9 @@ fn open_flasher(port: &str) -> Result<Flasher, String> {
         serial_number: None,
         manufacturer: None,
         product: None,
+        // serialport's usbportinfo-interface feature adds this; the manifest asks for it
+        // so the shape does not depend on what another crate happens to turn on.
+        interface: None,
     };
     let connection = Connection::new(
         serial,
@@ -216,8 +219,8 @@ pub fn handle_request(body: &str, ctx: &Arc<Ctx>) -> String {
         None => return err("no port in the request"),
     };
     let sf = int_field(body, "sf").unwrap_or(9);
-    if !(7..=12).contains(&sf) {
-        return err("spreading factor must be between 7 and 12");
+    if !(6..=12).contains(&sf) {
+        return err("spreading factor must be between 6 and 12");
     }
 
     let owned: Vec<u8>;

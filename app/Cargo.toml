@@ -1,16 +1,19 @@
 [package]
 name = "descent-ground"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 
 [dependencies]
-serialport = { version = "4.10", default-features = false }
+serialport = { version = "4.10", default-features = false, features = ["usbportinfo-interface"] }
 tiny_http = "0.12"
 tungstenite = "0.30"
 include_dir = "0.7"
 webbrowser = "1.2"
 espflash = { version = "4.6", default-features = false, features = ["serialport"] }
 humantime = "2.1"
+# Talks to an ST-Link itself, so pulling a flight log needs no OpenOCD and no second
+# checkout. Default features on purpose: --no-default-features drops the chip database.
+probe-rs = "0.32.0"
 
 [profile.release]
 opt-level = "z"

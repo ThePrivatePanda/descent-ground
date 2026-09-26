@@ -62,10 +62,13 @@ pub fn ports_json(ports: &[PortInfo], boards: &[Board], log: Option<&str>) -> St
 // What a launcher polls to know we are up. Built from numbers rather than read off a
 // running server, so it can be checked without one.
 pub fn health_json(version: &str, port: u16, log: Option<&str>, boards: usize, receivers: usize) -> String {
+    // The dump firmware has no version of its own and does change, so the build says
+    // which copy it is carrying rather than leaving a stale one to be guessed at.
     format!(
-        "{{\"ok\":true,\"version\":\"{}\",\"port\":{},\"log\":{},\"boards\":{},\"receivers\":{}}}",
+        "{{\"ok\":true,\"version\":\"{}\",\"port\":{},\"dumpFirmware\":\"{}\",\"log\":{},\"boards\":{},\"receivers\":{}}}",
         esc(version),
         port,
+        esc(crate::flash::CHIPSAT_DUMP_ID),
         match log {
             Some(l) => format!("\"{}\"", esc(l)),
             None => String::from("null"),
@@ -183,7 +186,6 @@ pub struct Ctx {
     pub log: Arc<Mutex<Option<Log>>>,
     pub dir: PathBuf,
     pub port: u16,
-    pub pull_command: Option<String>,
     pub pull: crate::pull::Shared,
 }
 
@@ -315,10 +317,10 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
                 Ok(())
             }
             "config" => match int_field(&body, "sf") {
-                Some(sf) if (7..=12).contains(&sf) => {
+                Some(sf) if (6..=12).contains(&sf) => {
                     ctx.hub.lock().unwrap().send(&key, &format!("#SET,sf,{}\n", sf))
                 }
-                Some(sf) => Err(format!("spreading factor {} is not between 7 and 12", sf)),
+                Some(sf) => Err(format!("spreading factor {} is not between 6 and 12", sf)),
                 None => Err(String::from("no spreading factor in the request")),
             },
             other => Err(format!("no such action: {}", other)),
@@ -458,6 +460,45 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
     }
 
     // Start a new log without restarting the app, for a second drop on the same day.
+    // Every log beside the app, so they can be opened or saved from the page. Someone who
+    // pulled a chip should not have to go looking in a directory for what they just read.
+    if path == "/api/logs" {
+        let mut rows: Vec<(u64, String, u64)> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&ctx.dir) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".log") {
+                    continue;
+                }
+                let meta = e.metadata().ok();
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let when = meta
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                rows.push((when, name, size));
+            }
+        }
+        rows.sort_by(|a, b| b.0.cmp(&a.0));   // newest first: it is the one just written
+        let items: Vec<String> = rows
+            .iter()
+            .map(|(when, name, size)| {
+                format!(
+                    "{{\"name\":\"{}\",\"bytes\":{},\"when\":{}}}",
+                    esc(name),
+                    size,
+                    when
+                )
+            })
+            .collect();
+        let _ = request.respond(
+            Response::from_string(format!("{{\"logs\":[{}]}}", items.join(",")))
+                .with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
     // A log off the app's own directory, so the page can replay what was written beside it
     // without anyone standing up a second web server to hand it over. Read-only, this
     // directory only, no walking out of it.
@@ -475,7 +516,11 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
             Ok(body) => {
                 let _ = request.respond(
                     Response::from_data(body)
-                        .with_header(header("Content-Type", "text/plain; charset=utf-8")),
+                        .with_header(header("Content-Type", "text/plain; charset=utf-8"))
+                        .with_header(header(
+                            "Content-Disposition",
+                            &format!("inline; filename=\"{}\"", name.replace('"', "")),
+                        )),
                 );
             }
             Err(e) => {
@@ -503,51 +548,53 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
 
     // Pulling a flight log off a chip. The app runs what it was told to run and shows what
     // that says; it does not know an ST-Link from a cross compiler and is not going to.
+    // Pull a flight log off a ChipSat. Everything happens in this program: the debug
+    // probe is driven directly and the dump firmware is carried inside the binary, so
+    // there is nothing to install and nothing to configure.
     if path == "/api/pull" {
         let mut body = String::new();
         let _ = std::io::Read::read_to_string(&mut request.as_reader(), &mut body);
-        let text = match &ctx.pull_command {
-            None => String::from("{\"ok\":false,\"error\":\"no pull command set. Put a line like  pull = /path/to/flash_replay.py --no-browser --port {port} --dir {out} {restore}  in descent-ground.conf beside the program.\"}"),
-            Some(template) => {
-                let port = crate::json::str_field(&body, "port").unwrap_or_default();
-                let restore = crate::json::int_field(&body, "restore").unwrap_or(1) != 0;
-                if port.is_empty() {
-                    String::from("{\"ok\":false,\"error\":\"no board in the request\"}")
-                } else {
-                    let command = crate::pull::fill(template, &port, &ctx.dir, restore);
-                    // The board is handed over the same way a flash takes it, so discovery
-                    // stays off the port while something else is talking to it.
-                    let released = ctx.hub.lock().unwrap().release_for_flash(&port);
-                    match released.and_then(|()| {
-                        crate::pull::start(
-                            &ctx.pull,
-                            command.clone(),
-                            port.clone(),
-                            restore,
-                            ctx.dir.clone(),
-                            ctx.broadcast.clone(),
-                        )
-                    }) {
-                        Ok(()) => {
-                            let hub = ctx.hub.clone();
-                            let pull = ctx.pull.clone();
-                            let port2 = port.clone();
-                            std::thread::spawn(move || {
-                                loop {
-                                    std::thread::sleep(std::time::Duration::from_millis(500));
-                                    if !pull.lock().map(|p| p.running).unwrap_or(false) {
-                                        break;
-                                    }
+        let board = crate::json::str_field(&body, "port").unwrap_or_default();
+        let keep_fsw = crate::json::int_field(&body, "keepFsw").unwrap_or(1) != 0;
+        let probe = crate::json::str_field(&body, "probe").filter(|p| !p.is_empty());
+
+        let text = match crate::flash::CHIPSAT_DUMP {
+            None => String::from("{\"ok\":false,\"error\":\"this build carries no dump firmware\"}"),
+            Some(_) if board.is_empty() => String::from("{\"ok\":false,\"error\":\"no board in the request\"}"),
+            Some(image) => {
+                // The board is taken off discovery the same way a flash takes it, so
+                // nothing else opens the port while the probe is resetting it.
+                let released = ctx.hub.lock().unwrap().release_for_flash(&board);
+                match released.and_then(|()| {
+                    crate::pull::start(crate::pull::Job {
+                        shared: ctx.pull.clone(),
+                        broadcast: ctx.broadcast.clone(),
+                        dir: ctx.dir.clone(),
+                        port_name: board.clone(),
+                        probe,
+                        keep_fsw,
+                        dump_image: image,
+                    })
+                }) {
+                    Ok(()) => {
+                        let hub = ctx.hub.clone();
+                        let pull = ctx.pull.clone();
+                        let board2 = board.clone();
+                        std::thread::spawn(move || {
+                            loop {
+                                std::thread::sleep(std::time::Duration::from_millis(500));
+                                if !pull.lock().map(|p| p.running).unwrap_or(false) {
+                                    break;
                                 }
-                                hub.lock().unwrap().take_back(&port2);
-                            });
-                            println!("pulling from {}: {}", port, command);
-                            format!("{{\"ok\":true,\"command\":\"{}\"}}", esc(&command))
-                        }
-                        Err(e) => {
-                            ctx.hub.lock().unwrap().take_back(&port);
-                            format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e))
-                        }
+                            }
+                            hub.lock().unwrap().take_back(&board2);
+                        });
+                        println!("pulling from {}{}", board, if keep_fsw { ", keeping the flight software" } else { ", NOT keeping the flight software" });
+                        String::from("{\"ok\":true}")
+                    }
+                    Err(e) => {
+                        ctx.hub.lock().unwrap().take_back(&board);
+                        format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e))
                     }
                 }
             }
@@ -562,11 +609,7 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
     if path == "/api/pull/state" {
         let body = {
             let p = ctx.pull.lock().unwrap();
-            let mut j = crate::pull::state_json(&p, crate::logfile::now_ms());
-            if ctx.pull_command.is_none() {
-                j = j.replace("\"ok\":true", "\"ok\":true,\"unconfigured\":true");
-            }
-            j
+            crate::pull::state_json(&p, crate::logfile::now_ms())
         };
         let _ = request.respond(
             Response::from_string(body).with_header(header("Content-Type", "application/json")),
@@ -651,14 +694,17 @@ mod tests {
 
     #[test]
     fn health_is_shaped_the_way_a_launcher_reads_it() {
+        let id = crate::flash::CHIPSAT_DUMP_ID;
         assert_eq!(
             health_json("0.4.0", 8790, Some("/tmp/a.log"), 2, 1),
-            "{\"ok\":true,\"version\":\"0.4.0\",\"port\":8790,\"log\":\"/tmp/a.log\",\"boards\":2,\"receivers\":1}"
+            format!("{{\"ok\":true,\"version\":\"0.4.0\",\"port\":8790,\"dumpFirmware\":\"{}\",\"log\":\"/tmp/a.log\",\"boards\":2,\"receivers\":1}}", id)
         );
         assert_eq!(
             health_json("0.4.0", 8765, None, 0, 0),
-            "{\"ok\":true,\"version\":\"0.4.0\",\"port\":8765,\"log\":null,\"boards\":0,\"receivers\":0}"
+            format!("{{\"ok\":true,\"version\":\"0.4.0\",\"port\":8765,\"dumpFirmware\":\"{}\",\"log\":null,\"boards\":0,\"receivers\":0}}", id)
         );
+        // A build that carries a dump image says which one, so a stale copy is visible.
+        assert!(!id.is_empty(), "the dump firmware should be compiled in");
         // The version is the crate's, not a string typed twice.
         assert!(health_json(env!("CARGO_PKG_VERSION"), 1, None, 0, 0)
             .contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));

@@ -71,7 +71,6 @@ pub struct Opts {
     pub help: bool,
     pub port: Option<u16>,
     pub stop: bool,
-    pub pull: Option<String>,
 }
 
 // The flag wins over the file, so a one-off run can always go the other way. A port
@@ -108,8 +107,7 @@ pub fn parse(args: &[String], conf: Option<&str>) -> Result<Opts, String> {
             }
         }
     }
-    let pull = conf.and_then(pull_in_conf);
-    Ok(Opts { open_browser, help, port, stop, pull })
+    Ok(Opts { open_browser, help, port, stop })
 }
 
 // Port 0 would get us any free port, which is the one thing a caller asking for a
@@ -120,25 +118,6 @@ fn a_port(text: &str) -> Result<u16, String> {
         Ok(p) if p > 0 => Ok(p),
         _ => Err(format!("{:?} is not a port number between 1 and 65535", text)),
     }
-}
-
-// The command that pulls a log off a chip. The app has no idea how to do that and does
-// not want one: it is an ST-Link, a cross compiler and a flash procedure that live in the
-// flight repo. Whoever set this line decided what runs.
-pub fn pull_in_conf(text: &str) -> Option<String> {
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('#') {
-            continue;   // a command can contain a #, so only a whole-line comment counts
-        }
-        let Some((k, v)) = line.split_once('=') else { continue };
-        if k.trim() != "pull" {
-            continue;
-        }
-        let v = v.trim();
-        return if v.is_empty() { None } else { Some(v.to_string()) };
-    }
-    None
 }
 
 fn browser_in_conf(text: &str) -> Option<bool> {
@@ -247,22 +226,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod pull_tests {
-    use super::*;
-
-    #[test]
-    fn the_pull_command_is_taken_whole() {
-        // A command line has spaces, quotes and its own flags; it is not a word.
-        let conf = "browser = no\npull = ../flight/tools/flash_replay.py --no-browser --port {port} --dir {out}\n";
-        assert_eq!(
-            pull_in_conf(conf).as_deref(),
-            Some("../flight/tools/flash_replay.py --no-browser --port {port} --dir {out}")
-        );
-        assert_eq!(pull_in_conf("# pull = not this one\nbrowser = no"), None);
-        assert_eq!(pull_in_conf("pull =   "), None);
-        assert_eq!(pull_in_conf("browser = no"), None);
-        // A # inside the command is part of it, not a comment.
-        assert_eq!(pull_in_conf("pull = tool --tag '#3'").as_deref(), Some("tool --tag '#3'"));
-    }
-}
