@@ -71,6 +71,10 @@
       : 'Pick a T-Beam serial port';
     $('btn-setup').hidden = !native;
     if (!native) $('setup').hidden = true;
+    // Tiles are stored by the app, so on the hosted copy the map has nothing to draw and
+    // nowhere to save anything. Better to not offer it than to open an empty one.
+    $('btn-map').hidden = !native;
+    if (!native) $('mapdrawer').hidden = true;
     if (hub.supported) return;
     $('unsupported').hidden = false; $('btn-connect').disabled = true;
   }
