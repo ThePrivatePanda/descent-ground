@@ -57,6 +57,7 @@ constexpr char kPrefsNamespace[] = "dgrx";
 constexpr float kBandwidthsKHz[] = {
   7.8f, 10.4f, 15.6f, 20.8f, 31.25f, 41.7f, 62.5f, 125.0f, 250.0f, 500.0f };
 
+constexpr size_t   kFlightPacketBytes = 55;   // fixed, and what SF6 needs told to it
 constexpr uint32_t kHeartbeatMs     = 5000;
 constexpr uint32_t kHeaderMs        = 30000;
 constexpr uint32_t kSerialBaud      = 115200;
@@ -211,6 +212,12 @@ void fatal(int code) {
   }
 }
 
+// SF6 has no explicit header on this radio. Below SF7 the length is fixed in the
+// receiver; at SF7 and above the header carries it and any length is forwarded.
+int applyHeaderMode(uint8_t sf) {
+  return sf == 6 ? radio.implicitHeader(kFlightPacketBytes) : radio.explicitHeader();
+}
+
 void startListening() {
   const int state = radio.startReceive();
   if (state != RADIOLIB_ERR_NONE) {
@@ -274,9 +281,10 @@ void applySetting(char* arg) {
   float f = 0.0f;
 
   if (strcmp(key, "sf") == 0) {
-    // SF6 is refused: it puts the SX127x in implicit header mode, and this sketch
-    // forwards any length from an explicit header. The ChipSats use 9 and 12.
-    if (!parseLong(value, 10, &n) || n < 7 || n > 12) {
+    // SF6 works, but only in implicit header mode: the SX127x has no explicit header at
+    // that spreading factor, so the receiver is told the length instead of reading it.
+    // The flight packet is always 55 bytes, which is what makes that possible here.
+    if (!parseLong(value, 10, &n) || n < 6 || n > 12) {
       printCommandError(key);
       return;
     }
@@ -330,7 +338,12 @@ void applySetting(char* arg) {
   switch (which) {
     case kSetFreq: state = radio.setFrequency(wanted.freqMHz); break;
     case kSetBw:   state = radio.setBandwidth(wanted.bwKHz); break;
-    case kSetSf:   state = radio.setSpreadingFactor(wanted.sf); break;
+    case kSetSf:
+      state = radio.setSpreadingFactor(wanted.sf);
+      if (state == RADIOLIB_ERR_NONE) {
+        state = applyHeaderMode(wanted.sf);
+      }
+      break;
     case kSetCr:   state = radio.setCodingRate(wanted.cr); break;
     case kSetSync: state = radio.setSyncWord(wanted.sync); break;
     case kSetPre:  state = radio.setPreambleLength(wanted.pre); break;
@@ -403,6 +416,11 @@ void setup() {
   }
 
   state = radio.setCRC(kPhyCrc);
+  if (state != RADIOLIB_ERR_NONE) {
+    fatal(state);
+  }
+
+  state = applyHeaderMode(settings.sf);
   if (state != RADIOLIB_ERR_NONE) {
     fatal(state);
   }

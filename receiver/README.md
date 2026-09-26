@@ -55,7 +55,7 @@ Build size: 382 KB flash (29%), 24.8 KB RAM (7%).
 | `HB,<millis>,<ok>,<err>` | every 5 s | uptime ms; good packets since boot; errors since boot |
 | `#DG,FATAL,<code>` | setup failure | RadioLib code; repeated every 5 s, board halted |
 | `#GET` | sent to the board | no fields; reprints the `#DG,RX` header at once |
-| `#SET,<key>,<value>` | sent to the board | `freq` 137-1020 MHz; `bw` 7.8 / 10.4 / 15.6 / 20.8 / 31.25 / 41.7 / 62.5 / 125 / 250 / 500 kHz; `sf` 7-12; `cr` 5-8; `sync` 0x00-0xFF; `pre` 6-65535 |
+| `#SET,<key>,<value>` | sent to the board | `freq` 137-1020 MHz; `bw` 7.8 / 10.4 / 15.6 / 20.8 / 31.25 / 41.7 / 62.5 / 125 / 250 / 500 kHz; `sf` 6-12; `cr` 5-8; `sync` 0x00-0xFF; `pre` 6-65535 |
 | `#DG,ERR,<key>` | command rejected | the key that would not take; nothing changed |
 
 Example: `PKT,55,0000…0923,-50.0,13.75,-1234`

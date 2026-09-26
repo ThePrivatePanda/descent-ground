@@ -1,9 +1,10 @@
 # Firmware image
 
-`descent-raw-receiver-1.0.0.bin` is the receiver sketch as one merged image, ready to write at
+`descent-raw-receiver-1.1.0.bin` is the receiver sketch as one merged image, ready to write at
 offset 0. The standalone app carries a copy and flashes it over USB, so nobody needs the Arduino
 toolchain to set up a T-Beam. It is the sketch in `../DescentRawReceiver/` built with the ESP32
-core 2.0.17 and RadioLib 7.1.2, 382 KB of program storage.
+core 2.0.17 and RadioLib 7.1.2, 382 KB of program storage. Since 1.1.0 it also
+listens at SF6, where the radio has no header and the 55-byte length is set instead.
 
 Rebuild it after changing the sketch:
 
