@@ -462,6 +462,64 @@ fn handle(mut request: Request, ctx: Arc<Ctx>) {
     // Start a new log without restarting the app, for a second drop on the same day.
     // Every log beside the app, so they can be opened or saved from the page. Someone who
     // pulled a chip should not have to go looking in a directory for what they just read.
+    // Map tiles the browser saved while it had a connection.
+    if path.starts_with("/tiles/") {
+        match crate::tiles::parse(&path) {
+            Some((z, x, y)) => match crate::tiles::read(&ctx.dir, z, x, y) {
+                Some(bytes) => {
+                    let _ = request.respond(
+                        Response::from_data(bytes)
+                            .with_header(header("Content-Type", "image/png"))
+                            .with_header(header("Cache-Control", "max-age=604800")),
+                    );
+                }
+                // Missing is ordinary: the page draws an empty square and carries on.
+                None => {
+                    let _ = request.respond(Response::from_string("no tile").with_status_code(404));
+                }
+            },
+            None => {
+                let _ = request.respond(Response::from_string("not a tile").with_status_code(400));
+            }
+        }
+        return;
+    }
+
+    if path.starts_with("/api/tile/") {
+        let as_tile = path.replacen("/api/tile/", "/tiles/", 1);
+        let (z, x, y) = match crate::tiles::parse(&as_tile) {
+            Some(t) => t,
+            None => {
+                let _ = request.respond(Response::from_string("not a tile").with_status_code(400));
+                return;
+            }
+        };
+        let mut bytes = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut request.as_reader(), &mut bytes);
+        let body = match crate::tiles::write(&ctx.dir, z, x, y, &bytes) {
+            Ok(()) => String::from("{\"ok\":true}"),
+            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", esc(&e)),
+        };
+        let _ = request.respond(
+            Response::from_string(body).with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
+    if path == "/api/tiles" {
+        let (count, bytes) = crate::tiles::stored(&ctx.dir);
+        let _ = request.respond(
+            Response::from_string(format!(
+                "{{\"tiles\":{},\"bytes\":{},\"dir\":\"{}\"}}",
+                count,
+                bytes,
+                esc(&crate::tiles::dir(&ctx.dir).to_string_lossy())
+            ))
+            .with_header(header("Content-Type", "application/json")),
+        );
+        return;
+    }
+
     if path == "/api/logs" {
         let mut rows: Vec<(u64, String, u64)> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&ctx.dir) {

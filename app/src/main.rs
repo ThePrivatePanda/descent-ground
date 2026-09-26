@@ -11,6 +11,7 @@ mod opts;
 mod pull;
 mod serial;
 mod stm32;
+mod tiles;
 mod server;
 mod urlfile;
 mod ws;
