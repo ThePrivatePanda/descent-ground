@@ -13,6 +13,9 @@
     autosave: true,
     autosaveS: 5,
     fileTag: 'descent',       // prefix for saved file names
+    home: '',                 // "lat, lon" you are standing at, for distance and bearing
+    rateWindowS: 10,          // seconds of altitude used for the climb/descent rate
+    alarmSound: true,         // beep when a unit that was being heard goes lost
   };
 
   function defaults() { return Object.assign({}, root.DG.fleet.DEFAULTS, UI_DEFAULTS); }

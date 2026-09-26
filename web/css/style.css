@@ -321,3 +321,17 @@ body[data-mode="replay"] .live-only { display: none; }
 }
 .views button[aria-selected="true"] { background: var(--sunk); border-color: var(--rule); color: var(--ink); }
 .views button[disabled] { color: var(--ink-3); }
+
+/* Recovery. The coordinate is the one number someone reads aloud while walking, so it
+   is the largest thing in the pane and selectable on its own line. */
+#recovery .coord { font-size: 15px; letter-spacing: 0.01em; user-select: all; }
+.rc-home { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--rule); flex-wrap: wrap; }
+.rc-home label { color: var(--ink-2); font-size: 12px; }
+.rc-home input { flex: 1; min-width: 130px; }
+
+/* Map. The canvas fills the drawer; grabbing is the only cursor hint it needs. */
+.mapbody { padding: 0; display: flex; }
+#map { flex: 1; min-height: 240px; background: var(--sunk); cursor: grab; touch-action: none; }
+.mapfoot { flex-direction: column; align-items: stretch; gap: 6px; }
+.map-get { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.map-get label { color: var(--ink-2); font-size: 12px; }

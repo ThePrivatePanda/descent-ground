@@ -30,6 +30,7 @@
   </div>
   <button id="btn-save" class="quiet live-only" title="Download everything received from all receivers since this page opened">Save session</button>
   <label class="button quiet" title="Open saved logs, including old lab CSV logs">Open log<input id="file-open" type="file" multiple accept=".txt,.log,.csv,.tsv" hidden></label>
+  <button id="btn-map" class="quiet" title="Map of the track, from tiles saved for offline use">Map</button>
   <button id="btn-settings" class="quiet" title="Graph, status and saving settings">Settings</button>
   <button id="btn-theme" class="quiet" title="Switch light / dark" aria-label="Switch light or dark theme">◑</button>
 </header>
@@ -65,6 +66,21 @@
         <button id="btn-pause" class="quiet" title="Freeze this panel">Pause</button>
       </div>
       <div id="latest" class="detail"></div>
+    </section>
+
+    <section class="pane">
+      <div class="pane-head">
+        <h2>Recovery</h2>
+        <span id="rc-age" class="note"></span>
+        <span class="spacer"></span>
+        <button id="rc-copy" class="quiet" title="Copy the last position">Copy</button>
+      </div>
+      <div id="recovery" class="detail"></div>
+      <div class="rc-home">
+        <label for="rc-home-in">Home</label>
+        <input id="rc-home-in" type="text" inputmode="decimal" placeholder="lat, lon" size="20">
+        <button id="rc-here" class="quiet" title="Use the last position as home">Use last fix</button>
+      </div>
     </section>
 
     <section class="pane clearbox">
@@ -122,6 +138,40 @@
   </section>
 </main>
 
+<aside id="mapdrawer" class="drawer" hidden>
+  <div class="drawer-head">
+    <h2>Map</h2>
+    <span id="map-note" class="note"></span>
+    <span class="spacer"></span>
+    <button id="map-out" class="quiet" title="Zoom out">&minus;</button>
+    <button id="map-in" class="quiet" title="Zoom in">+</button>
+    <button id="map-fit" class="quiet" title="Frame the whole track">Fit</button>
+    <button id="map-close">Close</button>
+  </div>
+  <div class="drawer-body mapbody">
+    <canvas id="map" width="900" height="560" aria-label="Track on saved map tiles"></canvas>
+  </div>
+  <div class="drawer-foot mapfoot">
+    <span class="note">Tiles are stored on this computer, so the map works with no internet. Download them
+      before you leave: a small area only, since tile servers ask that nobody bulk-downloads.</span>
+    <div class="map-get">
+      <label for="map-centre">Centre</label>
+      <input id="map-centre" type="text" inputmode="decimal" placeholder="lat, lon" size="20">
+      <label for="map-km">Radius</label>
+      <input id="map-km" type="number" min="0.2" max="20" step="0.1" value="2" size="4">
+      <span class="note">km</span>
+      <label for="map-zmax">Detail</label>
+      <select id="map-zmax">
+        <option value="15">to zoom 15</option>
+        <option value="16" selected>to zoom 16</option>
+        <option value="17">to zoom 17</option>
+      </select>
+      <button id="map-fetch" class="primary">Download tiles</button>
+    </div>
+    <span id="map-have" class="note"></span>
+  </div>
+</aside>
+
 <aside id="settings" class="drawer" hidden>
   <div class="drawer-head">
     <h2>Settings</h2>
@@ -154,6 +204,8 @@
 <script src="js/packet.js"></script>
 <script src="js/lines.js"></script>
 <script src="js/fleet.js"></script>
+<script src="js/recovery.js"></script>
+<script src="js/mapview.js"></script>
 <script src="js/store.js"></script>
 <script src="js/serial.js"></script>
 <script src="js/serial_native.js"></script>

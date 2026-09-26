@@ -12,6 +12,8 @@ or `descent-ground-windows-x64.exe`. One file, no install. Double-click it and i
 - Linux: you need to be in the `dialout` group, the same one Chrome's Web Serial already needs.
 - Needs no internet at all, on either platform.
 
+There is a one-page [field card](docs/field-card.md) to print for a launch.
+
 It opens your browser on startup. To stop that, run it with `--no-browser`, or put
 `browser = no` in a file called `descent-ground.conf` beside the program — a double-click cannot
 pass a flag, so the file is the way to make it stick. Either way it prints its address, and you
@@ -149,6 +151,33 @@ same time, so the counter tells you nothing about runs here.
 The dashboard shows that source in the receiver strip so a replayed dump cannot be mistaken for
 live reception. Records off a chip carry no RSSI or SNR, so those columns stay blank and the weak
 RF warning never fires: an absence, not a fault.
+
+## Finding it after it lands
+
+The Recovery pane on the left carries the last known position, how far and on what bearing that is
+from a home point you set, and whether the unit was still falling. The position is the newest one
+that arrived with the GPS marked valid, so losing the fix on the way down does not lose where it
+was. Set **Home** to where you are standing, either by typing `lat, lon` or with **Use last fix**.
+It is remembered in this browser.
+
+The vertical rate is a straight line through the last ten seconds of altitude, GPS if there is any
+and the barometer otherwise, so a metre of noise on one reading does not read as a climb.
+
+A unit that was being heard and goes lost beeps three times. Turn it off in Settings.
+
+## Map with no internet
+
+**Map** draws the track on map tiles kept on this computer. Download them before you go somewhere
+without a connection: give a centre and a radius, and the browser fetches the tiles and hands them
+to the app, which stores them in a `tiles` folder beside the program. After that the map works
+offline, forever, on that machine.
+
+Keep the area small. Tile servers ask that nobody bulk-download from them, so this stops at 1200
+tiles a go and only fetches zoom 12 up to the detail you pick. A 2 km radius to zoom 16 is a few
+hundred tiles, which is a small site covered.
+
+Squares that were never downloaded are left blank rather than guessed. The position, distance and
+bearing in the Recovery pane do not need tiles at all.
 
 ## Recording
 

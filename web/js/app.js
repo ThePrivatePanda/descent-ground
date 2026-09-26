@@ -1,7 +1,7 @@
 // Wires the page together: serial / log input -> fleet -> panels and charts.
 (function () {
   'use strict';
-  const { packet: P, lines: L, fleet: F, recorder: R, store: S } = DG;
+  const { packet: P, lines: L, fleet: F, recorder: R, store: S, recovery: RC, mapview: MV } = DG;
   const $ = (id) => document.getElementById(id);
 
   let settings = S.loadSettings();
@@ -1153,6 +1153,89 @@
     return '<section class="list"><h3>' + title + note + '</h3><dl>' + rows.join('') + '</dl></section>';
   }
 
+  // ---------- recovery ----------
+  // The arithmetic lives in js/recovery.js so it can be tested; this only draws it.
+  // ---------- alarm ----------
+  // On a flight line nobody is watching the table when a unit drops out, so a unit going
+  // from heard to lost makes a noise. Synthesised rather than a sound file, because the
+  // field laptop has no internet and one less asset is one less thing to ship.
+  const heard = new Map();   // csid -> the state it was in when last drawn
+  let audio = null;
+
+  function beep(times) {
+    if (!settings.alarmSound) return;
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      for (let i = 0; i < times; i++) {
+        const at = audio.currentTime + i * 0.22;
+        const osc = audio.createOscillator();
+        const gain = audio.createGain();
+        osc.frequency.value = 660;
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.exponentialRampToValueAtTime(0.2, at + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.16);
+        osc.connect(gain).connect(audio.destination);
+        osc.start(at); osc.stop(at + 0.18);
+      }
+    } catch (e) { /* no audio device, or the browser wants a click first */ }
+  }
+
+  // A replay is a recording of something that already happened, so it never alarms.
+  function watchForLost(f, t) {
+    if (view.mode === 'replay') return;
+    for (const u of f.units.values()) {
+      const st = f.state(u, t);
+      const was = heard.get(u.csid);
+      if (was && was !== 'LOST' && st === 'LOST') {
+        beep(3);
+        toast('CSID ' + u.csid + ' lost after ' + age(t - u.lastT));
+      }
+      heard.set(u.csid, st);
+    }
+  }
+
+  function renderRecovery(f, t) {
+    const el = $('recovery');
+    const u = view.sel === null ? null : f.unit(view.sel);
+    const fix = RC.lastFix(u);
+    if (!fix) {
+      $('rc-age').textContent = '';
+      el.innerHTML = '<div class="none">No position yet for this unit.</div>';
+      return;
+    }
+    const since = t - fix.t;
+    $('rc-age').textContent = since < 2000 ? 'live' : age(since) + ' old';
+    const coord = fix.lat.toFixed(6) + ', ' + fix.lon.toFixed(6);
+
+    const where = ['<dt>Position</dt><dd class="v coord">' + coord + '</dd><dd class="u"></dd>',
+      plainRow('Fix age', since < 2000 ? 'just now' : age(since), '')];
+
+    const home = RC.parsePoint(settings.home);
+    if (home) {
+      const g = RC.greatCircle(home.lat, home.lon, fix.lat, fix.lon);
+      where.push(plainRow('Distance', RC.metres(g.m), ''));
+      where.push(plainRow('Bearing', Math.round(g.deg) + '\u00b0 ' + RC.compass(g.deg), ''));
+    } else {
+      where.push(plainRow('Distance', 'set a home point below', '', 'stale'));
+    }
+
+    // GPS altitude when there is one, because the barometer drifts with the weather.
+    const gps = RC.verticalRate(u, 'gpsAlt', settings.rateWindowS);
+    const rate = Number.isFinite(gps) ? gps : RC.verticalRate(u, 'envAlt', settings.rateWindowS);
+    const which = Number.isFinite(gps) ? 'GPS' : 'barometer';
+    const word = !Number.isFinite(rate) ? '\u2014'
+      : Math.abs(rate) < 0.5 ? 'level'
+        : fmt(Math.abs(rate), 1) + (rate < 0 ? ' falling' : ' rising');
+    const vertical = [plainRow('Rate, ' + which, word, Number.isFinite(rate) && Math.abs(rate) >= 0.5 ? 'm/s' : '')];
+    for (const [label, key] of [['GPS altitude', 'gpsAlt'], ['Barometric altitude', 'envAlt']]) {
+      const v = RC.lastValue(u, key);
+      vertical.push(plainRow(label, v === null ? '\u2014' : fmt(v, 1), 'm', v === null ? 'stale' : ''));
+    }
+
+    el.innerHTML = list('Last known position', where, null, u.latest) +
+      list('Vertical', vertical, null, u.latest);
+  }
+
   function renderLatest(f, t) {
     if (view.paused) return;
     const u = view.sel === null ? null : f.unit(view.sel);
@@ -1304,6 +1387,9 @@
     renderSummary(f, t);
     renderFleet(f, t);
     renderLatest(f, t);
+    renderRecovery(f, t);
+    watchForLost(f, t);
+    if (!$('mapdrawer').hidden) drawMap();
     renderReceivers();
     renderRecorder();
     if (force || Date.now() - lastChart > 500) {
@@ -1334,6 +1420,187 @@
   $('view-live').addEventListener('click', () => showView('live'));
   $('view-replay').addEventListener('click', () => showView('replay'));
   showView('live');
+
+  // Recovery controls. The home point persists because you stand in the same place all
+  // day, and retyping a coordinate while watching a descent is not on.
+  $('rc-home-in').value = settings.home || '';
+  $('rc-home-in').addEventListener('change', (e) => {
+    settings.home = e.target.value.trim();
+    S.saveSettings(settings);
+    render(true);
+  });
+
+  $('rc-here').addEventListener('click', () => {
+    const f = fleet();
+    const u = view.sel === null ? null : f.unit(view.sel);
+    const fix = lastFix(u);
+    if (!fix) { toast('No position yet to take as home.'); return; }
+    settings.home = fix.lat.toFixed(6) + ', ' + fix.lon.toFixed(6);
+    $('rc-home-in').value = settings.home;
+    S.saveSettings(settings);
+    render(true);
+    toast('Home set to ' + settings.home);
+  });
+
+  $('rc-copy').addEventListener('click', async () => {
+    const f = fleet();
+    const u = view.sel === null ? null : f.unit(view.sel);
+    const fix = lastFix(u);
+    if (!fix) { toast('No position to copy.'); return; }
+    const text = fix.lat.toFixed(6) + ', ' + fix.lon.toFixed(6);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Copied ' + text);
+    } catch (e) {
+      // Clipboard access can be refused even on localhost, so leave it selectable.
+      toast('Could not copy. The position is ' + text);
+    }
+  });
+
+  // ---------- map ----------
+  // Tiles come from a public tile server while there is a connection and are kept by the
+  // app, so the field laptop draws the same map with nothing but itself. The browser does
+  // the fetching: it already has the connection and the certificates for it.
+  const TILE_SERVER = 'https://tile.openstreetmap.org/';
+  const TILE_CAP = 1200;       // a couple of hundred MB at most, and polite to the server
+
+  const map = { lat: NaN, lon: NaN, zoom: 15, drag: null, busy: false };
+
+  function trackOf(u) {
+    if (!u) return [];
+    const h = u.history;
+    const out = [];
+    for (let i = 0; i < h.t.length; i++) {
+      const lat = h.lat[i]; const lon = h.lon[i];
+      if (lat === null || lon === null || (lat === 0 && lon === 0)) continue;
+      if (Number.isFinite(lat) && Number.isFinite(lon)) out.push({ lat, lon });
+    }
+    return out;
+  }
+
+  function drawMap() {
+    if ($('mapdrawer').hidden) return;
+    const f = fleet();
+    const u = view.sel === null ? null : f.unit(view.sel);
+    const track = trackOf(u);
+    const fix = RC.lastFix(u);
+    const home = RC.parsePoint(settings.home);
+    if (!Number.isFinite(map.lat)) {
+      const at = fix || home || track[0];
+      if (at) { map.lat = at.lat; map.lon = at.lon; }
+    }
+    const canvas = $('map');
+    // Match the drawing surface to the space the drawer actually gives it.
+    const box = canvas.parentElement.getBoundingClientRect();
+    const w = Math.max(320, Math.floor(box.width) - 4);
+    const h = Math.max(240, Math.floor(box.height) - 4);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    if (!Number.isFinite(map.lat)) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+      $('map-note').textContent = 'no position yet';
+      return;
+    }
+    const r = MV.draw(canvas, { lat: map.lat, lon: map.lon, zoom: map.zoom }, { track, fix, home });
+    $('map-note').textContent = 'zoom ' + r.zoom + (r.missing ? ', ' + r.missing + ' squares not downloaded' : '');
+  }
+
+  function fitMap() {
+    const f = fleet();
+    const u = view.sel === null ? null : f.unit(view.sel);
+    const track = trackOf(u);
+    const home = RC.parsePoint(settings.home);
+    const pts = track.concat(home ? [home] : []);
+    if (!pts.length) return;
+    let n = -90; let s2 = 90; let e = -180; let w = 180;
+    for (const p of pts) { n = Math.max(n, p.lat); s2 = Math.min(s2, p.lat); e = Math.max(e, p.lon); w = Math.min(w, p.lon); }
+    map.lat = (n + s2) / 2;
+    map.lon = (e + w) / 2;
+    // Half the diagonal, with a little room, as the square the view has to cover.
+    const g = RC.greatCircle(s2, w, n, e);
+    map.zoom = MV.fitZoom(Math.max(150, g.m / 2 + 60), Math.min($('map').width, $('map').height));
+    drawMap();
+  }
+
+  async function tileCount() {
+    try {
+      const r = await fetch('/api/tiles');
+      const j = await r.json();
+      $('map-have').textContent = j.tiles
+        ? j.tiles.toLocaleString() + ' tiles saved, ' + (j.bytes / 1048576).toFixed(1) + ' MB in ' + j.dir
+        : 'no tiles saved yet';
+    } catch (e) { $('map-have').textContent = ''; }
+  }
+
+  async function fetchTiles() {
+    if (map.busy) return;
+    const centre = RC.parsePoint($('map-centre').value) || RC.parsePoint(settings.home)
+      || (Number.isFinite(map.lat) ? { lat: map.lat, lon: map.lon } : null);
+    if (!centre) { toast('Type a centre as "lat, lon" first.'); return; }
+    const km = Math.min(20, Math.max(0.2, Number($('map-km').value) || 2));
+    const zmax = Number($('map-zmax').value) || 16;
+    const want = MV.tilesFor(centre.lat, centre.lon, km * 1000, 12, zmax, TILE_CAP);
+    if (!want.length) { toast('Nothing to download for that area.'); return; }
+
+    map.busy = true;
+    $('map-fetch').disabled = true;
+    let saved = 0; let failed = 0;
+    for (let i = 0; i < want.length; i++) {
+      const t = want[i];
+      const key = t.z + '/' + t.x + '/' + t.y;
+      try {
+        const res = await fetch(TILE_SERVER + key + '.png', { cache: 'force-cache' });
+        if (!res.ok) throw new Error(res.status);
+        const buf = await res.arrayBuffer();
+        const put = await fetch('/api/tile/' + key, { method: 'POST', body: buf });
+        const j = await put.json();
+        if (j.ok) saved++; else failed++;
+      } catch (e) {
+        failed++;
+        // A tile server that starts refusing will refuse the rest too.
+        if (failed > 20 && saved === 0) break;
+      }
+      if (i % 10 === 0) $('map-have').textContent = 'downloading ' + (i + 1) + ' of ' + want.length + '…';
+    }
+    map.busy = false;
+    $('map-fetch').disabled = false;
+    MV.forget();
+    await tileCount();
+    toast(saved + ' tiles saved' + (failed ? ', ' + failed + ' could not be fetched' : ''));
+    drawMap();
+  }
+
+  $('btn-map').addEventListener('click', () => {
+    const d = $('mapdrawer');
+    d.hidden = !d.hidden;
+    if (!d.hidden) {
+      if (!$('map-centre').value) $('map-centre').value = settings.home || '';
+      if (!Number.isFinite(map.lat)) fitMap();
+      drawMap();
+      tileCount();
+    }
+  });
+  $('map-close').addEventListener('click', () => { $('mapdrawer').hidden = true; });
+  $('map-in').addEventListener('click', () => { map.zoom = Math.min(MV.MAX_ZOOM, map.zoom + 1); drawMap(); });
+  $('map-out').addEventListener('click', () => { map.zoom = Math.max(1, map.zoom - 1); drawMap(); });
+  $('map-fit').addEventListener('click', fitMap);
+  $('map-fetch').addEventListener('click', fetchTiles);
+
+  // Dragging moves the view by whole pixels converted back to degrees at this zoom.
+  $('map').addEventListener('pointerdown', (e) => {
+    map.drag = { x: e.clientX, y: e.clientY, lat: map.lat, lon: map.lon };
+    $('map').setPointerCapture(e.pointerId);
+  });
+  $('map').addEventListener('pointermove', (e) => {
+    if (!map.drag || !Number.isFinite(map.lat)) return;
+    const z = Math.round(map.zoom);
+    const px = MV.xOf(map.drag.lon, z) * MV.SIZE - (e.clientX - map.drag.x);
+    const py = MV.yOf(map.drag.lat, z) * MV.SIZE - (e.clientY - map.drag.y);
+    map.lon = MV.lonOf(px / MV.SIZE, z);
+    map.lat = MV.latOf(py / MV.SIZE, z);
+    drawMap();
+  });
+  $('map').addEventListener('pointerup', () => { map.drag = null; });
 
   window.DGApp = { live, view, hub, recorder, autosave, startReplay, seek, settings: () => settings };
 })();
